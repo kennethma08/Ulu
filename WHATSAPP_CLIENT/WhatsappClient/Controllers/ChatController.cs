@@ -1198,4 +1198,4 @@ namespace WhatsappClient.Controllers
             public long? SizeBytes { get; set; }
         }
     }
-}
+} 
