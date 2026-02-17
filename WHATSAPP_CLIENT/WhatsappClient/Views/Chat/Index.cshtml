@@ -11,6 +11,7 @@
     <div class="card rounded-0 border-0 flex-grow-1 d-flex overflow-hidden">
         <div class="row g-0 flex-grow-1 h-100 overflow-hidden">
 
+            <!-- Panel izq (desktop) -->
             <div class="col-12 col-lg-4 col-xl-3 border-end d-none d-lg-flex flex-column h-100 overflow-hidden">
                 <div class="p-3">
                     <div class="row g-2">
@@ -29,12 +30,15 @@
                 <div id="users" class="list-group list-group-flush flex-grow-1 overflow-auto"></div>
             </div>
 
+            <!-- Panel der (chat) -->
             <div class="col-12 col-lg-8 col-xl-9 d-flex flex-column overflow-hidden"
                  style="min-height:0; height:calc(100vh - 80px); height:calc(100dvh - 80px);">
 
+                <!-- Header -->
                 <div class="py-2 px-3 border-bottom" id="chat-header">
                     <div class="d-flex align-items-center flex-wrap gap-2">
 
+                        <!-- Botón offcanvas (mobile) -->
                         <button class="btn btn-outline-secondary btn-sm d-lg-none btn-offcanvas order-0"
                                 type="button"
                                 data-bs-toggle="offcanvas"
@@ -44,6 +48,7 @@
                             <span class="d-none d-sm-inline">Conversaciones</span>
                         </button>
 
+                        <!-- Avatar -->
                         <img id="chat-avatar"
                              src="https://static.vecteezy.com/system/resources/previews/002/318/271/original/user-profile-icon-free-vector.jpg"
                              class="rounded-circle order-1"
@@ -51,6 +56,7 @@
                              height="36"
                              alt="avatar" />
 
+                        <!-- Nombre + estado -->
                         <div class="flex-grow-1 min-w-0 order-2">
                             <div class="d-flex align-items-center flex-wrap gap-2">
                                 <span id="chat-contact-name" class="fw-bold text-truncate-1">
@@ -74,9 +80,10 @@
                                 <span id="convNumber" class="badge conv-pill" style="display:none;"></span>
                             </div>
                             <div id="chat-contact-sub" class="small text-muted d-none d-sm-block"></div>
-                            <div id="assignedInfo" class="d-none d-sm-block"></div>
+                            <div id="assignedInfo" class="small d-none d-sm-block"></div>
                         </div>
 
+                        <!-- Controles de agente -->
                         <div class="d-flex align-items-center gap-2 ms-auto order-3">
                             <select id="agentSelect" class="form-select form-select-sm" style="max-width:220px;" disabled>
                                 <option value="">Agentes...</option>
@@ -90,6 +97,10 @@
                                 Soltar
                             </button>
 
+                            <button class="btn btn-sm btn-outline-warning" id="holdBtn" disabled>
+                                En espera
+                            </button>
+
                             <button class="btn btn-sm btn-outline-secondary"
                                     id="toggleStatusBtn"
                                     disabled>
@@ -99,8 +110,10 @@
                     </div>
                 </div>
 
+                <!-- Mensajes -->
                 <div class="chat-messages flex-grow-1 overflow-auto p-3" id="messages"></div>
 
+                <!-- Input -->
                 <div class="border-top p-3 flex-shrink-0">
                     <div class="input-group">
                         <button class="btn btn-outline-secondary"
@@ -131,6 +144,7 @@
     @Html.AntiForgeryToken()
 </form>
 
+<!-- Offcanvas mobile -->
 <div class="offcanvas offcanvas-start custom-chat"
      tabindex="-1"
      id="convOffcanvas"

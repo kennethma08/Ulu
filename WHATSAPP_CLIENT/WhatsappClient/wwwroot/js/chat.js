@@ -38,6 +38,9 @@ window.showToast = window.showToast || function (msg, type) {
     }
 };
 
+// =====================
+// DOM
+// =====================
 const usersEl = document.getElementById('users');
 const usersMobEl = document.getElementById('users-mob');
 const messagesEl = document.getElementById('messages');
@@ -45,8 +48,11 @@ const searchBox = document.getElementById('searchBox');
 const statusFilter = document.getElementById('statusFilter');
 const searchBoxMob = document.getElementById('searchBoxMob');
 const statusFilterMob = document.getElementById('statusFilterMob');
+
 const badgeEl = document.getElementById('statusBadge');
 const toggleBtn = document.getElementById('toggleStatusBtn');
+const holdBtn = document.getElementById('holdBtn');
+
 const sendBtn = document.getElementById('send-btn');
 const inputEl = document.getElementById('message-input');
 const convNumberEl = document.getElementById('convNumber');
@@ -54,6 +60,7 @@ const chatNameEl = document.getElementById('chat-contact-name');
 const chatBtnEdit = document.getElementById('chat-btnEditName');
 const chatBtnSave = document.getElementById('chat-btnSaveName');
 const antifgTokenEl = document.querySelector('#chat-antiforgery input[name="__RequestVerificationToken"]');
+
 const audioBtn = document.getElementById('btn-audio');
 const audioInput = document.getElementById('audio-input');
 
@@ -64,6 +71,9 @@ const assignedInfo = document.getElementById('assignedInfo');
 
 const NAME_MAX = 20;
 
+// =====================
+// Estado
+// =====================
 let me = { userId: 0, profileId: 0, isAdmin: false };
 let agents = [];
 
@@ -85,6 +95,9 @@ let plyrPlayers = [];
 
 const CR_TZ = 'America/Costa_Rica';
 
+// =====================
+// Utils de fecha
+// =====================
 function asDateUTC(ts) {
     if (ts == null) return new Date(NaN);
     if (typeof ts === 'number') return new Date(ts);
@@ -109,6 +122,9 @@ const toMillisUTC = (ts) => {
     return isNaN(d) ? 0 : d.getTime();
 };
 
+// =====================
+// Utils varios
+// =====================
 const esc = (s) =>
     String(s || '')
         .replace(/&/g, '&amp;')
@@ -120,26 +136,104 @@ const normalizeSender = (s) => {
     return (v === 'agent' || v === 'user' || v === 'me' || v === 'admin') ? 'me' : 'contact';
 };
 
-function applyStatusUI(status) {
-    const s = (status || 'open').toLowerCase();
-    badgeEl.textContent = s.toUpperCase();
-    badgeEl.className = 'badge ' + (s === 'open' ? 'badge-open' : 'badge-closed');
+// =====================
+// Estado de la conversación (UI)
+// =====================
+function applyStatusUI(conv) {
+    if (!badgeEl || !inputEl || !sendBtn) return;
 
-    const isClosed = (s !== 'open');
+    if (!conv) {
+        badgeEl.textContent = '';
+        badgeEl.className = 'badge';
 
-    inputEl.disabled = isClosed;
-    sendBtn.disabled = isClosed;
-    inputEl.placeholder = isClosed ? 'Conversación cerrada' : 'Escribe un mensaje...';
+        inputEl.disabled = true;
+        sendBtn.disabled = true;
+        inputEl.placeholder = 'Selecciona una conversación';
 
-    if (audioBtn) audioBtn.disabled = isClosed;
-    if (audioInput) audioInput.disabled = isClosed;
+        if (audioBtn) audioBtn.disabled = true;
+        if (audioInput) audioInput.disabled = true;
 
-    if (isClosed && isRecording) {
+        if (toggleBtn) {
+            toggleBtn.disabled = true;
+            toggleBtn.textContent = 'Cerrar';
+        }
+
+        if (holdBtn) {
+            holdBtn.disabled = true;
+            holdBtn.textContent = 'En espera';
+        }
+
+        return;
+    }
+
+    const status = (conv.status || 'open').toLowerCase();
+    const isClosed = status !== 'open';
+    const isOnHold = !!conv.isOnHold;
+    const canWrite = !!conv.canWrite;
+    const isMine = !!conv.isMine;
+    const isAdmin = !!(me && me.isAdmin);
+
+    // Badge
+    let badgeText;
+    let badgeClass;
+    if (isClosed) {
+        badgeText = 'CERRADA';
+        badgeClass = 'badge-closed';
+    } else if (isOnHold) {
+        badgeText = 'EN ESPERA';
+        badgeClass = 'badge-hold';
+    } else {
+        badgeText = 'ABIERTA';
+        badgeClass = 'badge-open';
+    }
+
+    badgeEl.textContent = badgeText;
+    badgeEl.className = 'badge ' + badgeClass;
+
+    // Input / botones de envío
+    const disableInput = !canWrite;
+    inputEl.disabled = disableInput;
+    sendBtn.disabled = disableInput;
+
+    if (!selectedConversation) {
+        inputEl.placeholder = 'Selecciona una conversación';
+    } else if (isClosed) {
+        inputEl.placeholder = 'Conversación cerrada';
+    } else if (!canWrite) {
+        inputEl.placeholder = 'No puedes escribir en esta conversación';
+    } else {
+        inputEl.placeholder = 'Escribe un mensaje...';
+    }
+
+    if (audioBtn) audioBtn.disabled = disableInput;
+    if (audioInput) audioInput.disabled = disableInput;
+
+    if ((isClosed || !canWrite) && isRecording) {
         stopRecording();
     }
 
-    toggleBtn.disabled = (!selectedConversation) || isClosed;
-    toggleBtn.textContent = isClosed ? 'Cerrada' : 'Cerrar';
+    // Botón cerrar
+    if (toggleBtn) {
+        const canClose = !isClosed && (isAdmin || isMine);
+        toggleBtn.disabled = !canClose;
+        toggleBtn.textContent = isClosed ? 'Cerrada' : 'Cerrar';
+    }
+
+    // Botón En espera / Reanudar
+    if (holdBtn) {
+        const canHoldResume = !isClosed && (isAdmin || isMine);
+        holdBtn.disabled = !canHoldResume;
+
+        if (isOnHold) {
+            holdBtn.textContent = 'Reanudar';
+            holdBtn.classList.remove('btn-outline-warning');
+            holdBtn.classList.add('btn-warning');
+        } else {
+            holdBtn.textContent = 'En espera';
+            holdBtn.classList.add('btn-outline-warning');
+            holdBtn.classList.remove('btn-warning');
+        }
+    }
 
     updateAssignUI();
 }
@@ -174,25 +268,47 @@ function syncMobFromDesktop() {
     if (statusFilter && statusFilterMob) statusFilterMob.value = statusFilter.value;
 }
 
+// =====================
+// Render lista conversaciones
+// =====================
 function conversationsHTML(arr) {
     return arr.map(c => {
-        const isClosed = (String(c.status || 'open').toLowerCase() !== 'open');
+        const status = (c.status || 'open').toLowerCase();
+        const isClosed = status !== 'open';
+        const isOnHold = !!c.isOnHold;
         const lastAt = c.lastActivityAt ? fmt(c.lastActivityAt) : (c.startedAt ? fmt(c.startedAt) : '');
-        const assigned = c.assignedUserName ? `Asignada: ${esc(c.assignedUserName)}` : 'Sin asignar';
+        const assigned = c.assignedUserName ? `Asignada a: ${esc(c.assignedUserName)}` : 'Sin asignar';
+
+        let traffic = c.traffic || (isClosed ? 'gray' : (isOnHold ? 'orange' : (c.assignedUserId ? 'red' : 'green')));
+        if (!['green', 'red', 'orange', 'gray'].includes(traffic)) traffic = 'green';
+
+        const trafficTitle =
+            isClosed ? 'Cerrada' :
+                isOnHold ? 'En espera' :
+                    (c.assignedUserId ? 'Asignada' : 'Libre');
+
+        const locked = c.lockedByOther
+            ? '<i class="bi bi-lock-fill ms-1 text-muted" title="Asignada a otro agente"></i>'
+            : '';
+
+        const statusLabel = isClosed ? 'Cerrada' : (isOnHold ? 'En espera' : 'Abierta');
 
         return `
         <a href="#"
            class="list-group-item list-group-item-action d-flex align-items-start${isClosed ? ' closed' : ''}"
            data-conv-id="${c.id}">
+            <div class="me-2 d-flex flex-column align-items-center">
+                <span class="traffic-dot traffic-${traffic}" title="${esc(trafficTitle)}"></span>
+            </div>
             <img src="https://static.vecteezy.com/system/resources/previews/002/318/271/original/user-profile-icon-free-vector.jpg"
                  class="rounded-circle me-2"
                  width="40"
                  height="40"
                  alt="">
             <div class="flex-grow-1">
-                <div class="fw-bold">
-                    #${c.id}
-                    <small class="text-muted">(${esc(c.status || 'open')})</small>
+                <div class="fw-bold d-flex align-items-center justify-content-between">
+                    <span>#${c.id}</span>
+                    <small class="text-muted text-uppercase">${esc(statusLabel)}${locked}</small>
                 </div>
                 <div class="small text-muted">${lastAt}</div>
                 <div class="small">${esc(c.contactPhone || '')}</div>
@@ -238,6 +354,9 @@ function renderConversations(list) {
     updateActiveConvLink();
 }
 
+// =====================
+// Header (nombre/contacto)
+// =====================
 function setHeaderNameFromConv(conv) {
     const localName = contactNamesById[conv.contactId] || conv.contactName || '';
     const display = (localName || conv.contactPhone || ('Contacto ' + (conv.contactId || ''))).trim();
@@ -245,37 +364,83 @@ function setHeaderNameFromConv(conv) {
     chatNameEl.textContent = display;
 }
 
+// =====================
+// Asignación / botones
+// =====================
 function updateAssignUI() {
     if (!agentSelect || !takeBtn || !releaseBtn) return;
 
-    if (!selectedConversation) {
+    const conv = selectedConversation;
+    if (!conv) {
         agentSelect.disabled = true;
         takeBtn.disabled = true;
         releaseBtn.disabled = true;
-        if (assignedInfo) assignedInfo.textContent = '';
+        if (assignedInfo) {
+            assignedInfo.textContent = '';
+            assignedInfo.classList.add('d-none');
+        }
         return;
     }
 
-    const asgId = selectedConversation.assignedUserId || null;
-    const asgName = selectedConversation.assignedUserName || '';
+    const asgId = conv.assignedUserId || null;
+    const asgName = conv.assignedUserName || '';
+    const isClosed = (conv.status || 'open').toLowerCase() !== 'open';
+    const isOnHold = !!conv.isOnHold;
+    const isMine = !!conv.isMine;
+    const isAdmin = !!(me && me.isAdmin);
 
     if (assignedInfo) {
-        assignedInfo.textContent = asgId ? `Asignada a: ${asgName || ('Usuario ' + asgId)}` : 'Sin asignar';
+        const suffix = isOnHold ? ' (en espera)' : '';
+        assignedInfo.textContent = asgId
+            ? `Asignada a: ${asgName || ('Usuario ' + asgId)}${suffix}`
+            : `Sin asignar${suffix}`;
+        assignedInfo.classList.remove('d-none');
     }
 
-    agentSelect.disabled = !(me && me.isAdmin);
-    takeBtn.disabled = !!asgId || !me.userId;
-    releaseBtn.disabled = !asgId;
+    // Tomar:
+    // - cerrada => deshabilitado
+    // - admin => puede tomar siempre
+    // - agente => solo cuando no está asignada a nadie
+    if (isClosed) {
+        takeBtn.disabled = true;
+    } else if (isAdmin) {
+        takeBtn.disabled = false;
+    } else {
+        takeBtn.disabled = !!asgId; // si ya hay dueño, no puedes "tomar"
+    }
 
-    if (me && me.isAdmin) {
-        if (asgId) {
-            agentSelect.value = String(asgId);
-        } else {
-            agentSelect.value = '';
-        }
+    // Soltar:
+    // - debe estar asignada a alguien
+    // - admin o dueño
+    if (isClosed || !asgId) {
+        releaseBtn.disabled = true;
+    } else if (isAdmin || isMine) {
+        releaseBtn.disabled = false;
+    } else {
+        releaseBtn.disabled = true;
+    }
+
+    // Combo de agentes:
+    // - Cerrada => no
+    // - admin => siempre
+    // - dueño => sí, puede transferir
+    // - resto => no
+    if (isClosed || !agents.length) {
+        agentSelect.disabled = true;
+    } else {
+        agentSelect.disabled = !(isAdmin || isMine);
+    }
+
+    if (asgId) {
+        agentSelect.value = String(asgId);
+    } else {
+        agentSelect.value = '';
     }
 }
 
+// =====================
+// Selección de conversación
+// =====================
 function selectConversation(conv) {
     selectedConversation = conv;
 
@@ -293,7 +458,7 @@ function selectConversation(conv) {
         }
     }
 
-    applyStatusUI(conv.status);
+    applyStatusUI(conv);
     updateActiveConvLink();
     loadMessages(conv.id);
 
@@ -314,6 +479,9 @@ function selectConversationById(id) {
     if (c) selectConversation(c);
 }
 
+// =====================
+// Carga inicial (me / agentes / conversaciones)
+// =====================
 async function loadMe() {
     try {
         const res = await fetch('/Chat/Me');
@@ -372,7 +540,7 @@ async function loadAllConversations() {
             if (updated) {
                 selectedConversation = updated;
                 updateAssignUI();
-                applyStatusUI(updated.status);
+                applyStatusUI(updated);
             }
         }
 
@@ -387,6 +555,9 @@ async function loadAllConversations() {
     }
 }
 
+// =====================
+// Mensajes
+// =====================
 async function loadMessages(conversationId) {
     messagesEl.innerHTML = '<div class="text-muted">Cargando mensajes...</div>';
     destroyPlyrPlayers();
@@ -496,13 +667,25 @@ function setupPlyrPlayers() {
     });
 }
 
+// =====================
+// Envío de texto
+// =====================
 async function sendMessage() {
     const txt = (inputEl.value || '').trim();
     if (!txt || !selectedConversation) return;
 
-    const status = (selectedConversation.status || 'open').toLowerCase();
-    if (status !== 'open') return;
+    if (!selectedConversation.canWrite) {
+        showInfo('No puedes escribir en esta conversación.');
+        return;
+    }
 
+    const status = (selectedConversation.status || 'open').toLowerCase();
+    if (status !== 'open') {
+        showInfo('La conversación está cerrada.');
+        return;
+    }
+
+    // Optimistic UI
     messages.push({ sender: 'agent', message: txt, type: 'text', sentAt: new Date().toISOString() });
     renderMessages();
     inputEl.value = '';
@@ -540,21 +723,28 @@ async function sendMessage() {
     }
 }
 
+// =====================
+// Cerrar conversación
+// =====================
 async function toggleStatus() {
     if (!selectedConversation) return;
 
     const current = (selectedConversation.status || 'open').toLowerCase();
     if (current !== 'open') return;
 
+    if (!(me && (me.isAdmin || selectedConversation.isMine))) {
+        showInfo('Solo el agente asignado o un administrador puede cerrar la conversación.');
+        return;
+    }
+
     const payload = {
         conversationId: selectedConversation.id,
         status: 'closed',
-        contactId: selectedConversation.contactId || null,
-        startedAt: selectedConversation.startedAt || null
+        reason: 'Cerrado desde el panel de agente'
     };
 
     try {
-        const res = await fetch('/Chat/UpdateConversationStatus', {
+        const res = await fetch('/Chat/CloseConversation', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -563,12 +753,17 @@ async function toggleStatus() {
         const data = await res.json();
         if (data && data.success) {
             selectedConversation.status = 'closed';
-            const idx = conversations.findIndex(c => String(c.id) === String(selectedConversation.id));
-            if (idx >= 0) conversations[idx].status = 'closed';
+            selectedConversation.canWrite = false;
 
-            applyStatusUI('closed');
+            const idx = conversations.findIndex(c => String(c.id) === String(selectedConversation.id));
+            if (idx >= 0) {
+                conversations[idx].status = 'closed';
+                conversations[idx].canWrite = false;
+            }
+
+            applyStatusUI(selectedConversation);
             renderConversations(conversations);
-            showSuccess('Conversación cerrado.');
+            showSuccess('Conversación cerrada.');
         } else {
             showError(data?.error || 'No se pudo actualizar el estado.');
         }
@@ -578,6 +773,9 @@ async function toggleStatus() {
     }
 }
 
+// =====================
+// Editar nombre de contacto
+// =====================
 function placeCaretEndEl(el) {
     try {
         const r = document.createRange();
@@ -665,7 +863,6 @@ async function saveHeaderContactName() {
 
         const token = antifgTokenEl ? antifgTokenEl.value : '';
 
-        // URL viene del Razor via window.chatConfig (definido en la vista)
         const actualizarNombreUrl =
             (window.chatConfig && window.chatConfig.actualizarNombreUrl) || '/Contact/ActualizarNombre';
 
@@ -696,10 +893,27 @@ async function saveHeaderContactName() {
     }
 }
 
+// =====================
+// Audio
+// =====================
 const MAX_AUDIO_BYTES = 16 * 1024 * 1024;
 
 async function startRecording() {
-    if (!selectedConversation) { showInfo('Seleccione una conversación.'); return; }
+    if (!selectedConversation) {
+        showInfo('Seleccione una conversación.');
+        return;
+    }
+
+    if (!selectedConversation.canWrite) {
+        showInfo('No puedes enviar audio en esta conversación.');
+        return;
+    }
+
+    const status = (selectedConversation.status || 'open').toLowerCase();
+    if (status !== 'open') {
+        showInfo('La conversación está cerrada.');
+        return;
+    }
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
         if (audioInput) audioInput.click();
@@ -797,19 +1011,30 @@ function stopRecording() {
 async function sendAudio(file) {
     if (!file || !selectedConversation) return;
 
-    const status = (selectedConversation.status || 'open').toLowerCase();
-    if (status !== 'open') { showInfo('La conversación está cerrada.'); return; }
+    if (!selectedConversation.canWrite) {
+        showInfo('No puedes enviar audio en esta conversación.');
+        return;
+    }
 
-    if (file.size > MAX_AUDIO_BYTES) { showError('El audio excede 16MB. Use un audio más corto.'); return; }
+    const status = (selectedConversation.status || 'open').toLowerCase();
+    if (status !== 'open') {
+        showInfo('La conversación está cerrada.');
+        return;
+    }
+
+    if (file.size > MAX_AUDIO_BYTES) {
+        showError('El audio excede 16MB. Use un audio más corto.');
+        return;
+    }
 
     const form = new FormData();
     form.append('file', file);
     form.append('conversationId', String(selectedConversation.id));
     if (selectedConversation.contactId) form.append('contactId', String(selectedConversation.contactId));
-    if (selectedConversation.contactPhone) form.append('toPhone', String(selectedConversation.contactPhone));
+    if (selectedConversation.contactPhone) form.append('contactPhone', String(selectedConversation.contactPhone));
 
     try {
-        const res = await fetch('/api/integraciones/whatsapp/agent/audio', { method: 'POST', body: form });
+        const res = await fetch('/Chat/SendAudio', { method: 'POST', body: form });
         const data = await res.json().catch(() => null);
 
         if (!res.ok || !data || data.success === false) {
@@ -825,6 +1050,9 @@ async function sendAudio(file) {
     }
 }
 
+// =====================
+// Eventos de lista
+// =====================
 function onListClick(e) {
     const link = e.target.closest('.list-group-item[data-conv-id]');
     if (!link) return;
@@ -836,12 +1064,26 @@ function onListClick(e) {
 if (usersEl) usersEl.addEventListener('click', onListClick);
 if (usersMobEl) usersMobEl.addEventListener('click', onListClick);
 
-if (statusFilter) statusFilter.addEventListener('change', () => { syncMobFromDesktop(); renderConversations(conversations); });
-if (searchBox) searchBox.addEventListener('input', () => { syncMobFromDesktop(); renderConversations(conversations); });
+// Filtros
+if (statusFilter) statusFilter.addEventListener('change', () => {
+    syncMobFromDesktop();
+    renderConversations(conversations);
+});
+if (searchBox) searchBox.addEventListener('input', () => {
+    syncMobFromDesktop();
+    renderConversations(conversations);
+});
 
-if (statusFilterMob) statusFilterMob.addEventListener('change', () => { setFiltersFromMob(); renderConversations(conversations); });
-if (searchBoxMob) searchBoxMob.addEventListener('input', () => { setFiltersFromMob(); renderConversations(conversations); });
+if (statusFilterMob) statusFilterMob.addEventListener('change', () => {
+    setFiltersFromMob();
+    renderConversations(conversations);
+});
+if (searchBoxMob) searchBoxMob.addEventListener('input', () => {
+    setFiltersFromMob();
+    renderConversations(conversations);
+});
 
+// Envío
 if (sendBtn) sendBtn.addEventListener('click', sendMessage);
 if (inputEl) {
     inputEl.addEventListener('keydown', (e) => {
@@ -852,8 +1094,10 @@ if (inputEl) {
     });
 }
 
+// Cerrar
 if (toggleBtn) toggleBtn.addEventListener('click', toggleStatus);
 
+// Audio
 if (audioBtn) {
     audioBtn.addEventListener('click', () => {
         if (audioBtn.disabled) return;
@@ -871,14 +1115,44 @@ if (audioInput) {
     });
 }
 
+// Editar nombre
 if (chatBtnEdit) chatBtnEdit.addEventListener('click', enterEditHeaderName);
 if (chatBtnSave) chatBtnSave.addEventListener('click', () => saveHeaderContactName());
 
-async function assignToUser(toUserId) {
+// =====================
+// Asignación / hold / resume (acciones hacia el backend)
+// =====================
+async function takeConversation() {
     if (!selectedConversation) return;
 
     try {
-        const res = await fetch('/Chat/AssignConversation', {
+        const res = await fetch('/Chat/TakeConversation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversationId: selectedConversation.id })
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || !data.ok) {
+            showError(data.error || 'No se pudo tomar la conversación.');
+            return;
+        }
+
+        showToast('Conversación tomada', 'success');
+        const keepId = selectedConversation.id;
+        await loadAllConversations();
+        selectConversationById(keepId);
+    } catch (e) {
+        console.error(e);
+        showError('Error tomando conversación.');
+    }
+}
+
+async function transferConversation(toUserId) {
+    if (!selectedConversation || !toUserId) return;
+
+    try {
+        const res = await fetch('/Chat/TransferConversation', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ conversationId: selectedConversation.id, toUserId: Number(toUserId) })
@@ -886,17 +1160,17 @@ async function assignToUser(toUserId) {
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok || !data.ok) {
-            showError(data.error || 'No se pudo asignar.');
+            showError(data.error || 'No se pudo transferir la conversación.');
             return;
         }
 
-        showToast('Asignación OK', 'success');
+        showToast('Conversación transferida', 'success');
         const keepId = selectedConversation.id;
         await loadAllConversations();
         selectConversationById(keepId);
     } catch (e) {
         console.error(e);
-        showError('Error asignando.');
+        showError('Error transfiriendo conversación.');
     }
 }
 
@@ -912,36 +1186,85 @@ async function releaseConversation() {
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok || !data.ok) {
-            showError(data.error || 'No se pudo soltar.');
+            showError(data.error || 'No se pudo soltar la conversación.');
             return;
         }
 
-        showToast('Soltada', 'success');
+        showToast('Conversación soltada', 'success');
         const keepId = selectedConversation.id;
         await loadAllConversations();
         selectConversationById(keepId);
     } catch (e) {
         console.error(e);
-        showError('Error soltando.');
+        showError('Error soltando conversación.');
     }
 }
 
+async function holdCurrentConversation() {
+    if (!selectedConversation) return;
+
+    try {
+        const res = await fetch('/Chat/HoldConversation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversationId: selectedConversation.id, reason: null })
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || !data.ok) {
+            showError(data.error || 'No se pudo poner en espera.');
+            return;
+        }
+
+        showToast('Conversación en espera', 'info');
+        const keepId = selectedConversation.id;
+        await loadAllConversations();
+        selectConversationById(keepId);
+    } catch (e) {
+        console.error(e);
+        showError('Error poniendo en espera.');
+    }
+}
+
+async function resumeCurrentConversation() {
+    if (!selectedConversation) return;
+
+    try {
+        const res = await fetch('/Chat/ResumeConversation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversationId: selectedConversation.id })
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || !data.ok) {
+            showError(data.error || 'No se pudo reanudar la conversación.');
+            return;
+        }
+
+        showToast('Conversación reanudada', 'success');
+        const keepId = selectedConversation.id;
+        await loadAllConversations();
+        selectConversationById(keepId);
+    } catch (e) {
+        console.error(e);
+        showError('Error reanudando conversación.');
+    }
+}
+
+// Eventos de asignación / hold
 if (agentSelect) {
     agentSelect.addEventListener('change', async () => {
-        if (!me.isAdmin) return;
         const v = agentSelect.value;
-        if (!v) return;
-        if (!selectedConversation) return;
-
-        await assignToUser(v);
+        if (!v || !selectedConversation) return;
+        await transferConversation(v);
     });
 }
 
 if (takeBtn) {
     takeBtn.addEventListener('click', async () => {
         if (!selectedConversation) return;
-        if (!me.userId) return;
-        await assignToUser(me.userId);
+        await takeConversation();
     });
 }
 
@@ -952,7 +1275,20 @@ if (releaseBtn) {
     });
 }
 
+if (holdBtn) {
+    holdBtn.addEventListener('click', async () => {
+        if (!selectedConversation) return;
+        if (selectedConversation.isOnHold) {
+            await resumeCurrentConversation();
+        } else {
+            await holdCurrentConversation();
+        }
+    });
+}
+
+// =====================
 // Init
+// =====================
 (async function init() {
     await loadMe();
     await loadAgents();

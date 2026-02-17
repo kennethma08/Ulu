@@ -3,6 +3,36 @@
     overflow: hidden;
 }
 
+.traffic-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-top: 3px;
+}
+
+.traffic-green {
+    background-color: #28a745;
+}
+
+.traffic-red {
+    background-color: #dc3545;
+}
+
+.traffic-orange {
+    background-color: #fd7e14;
+}
+
+.traffic-gray {
+    background-color: #6c757d;
+}
+
+.badge-hold {
+    background-color: #ffc107;
+    color: #212529;
+}
+
+
 :root {
     --violet-900: #310353;
     --violet-700: #7C3BB8;
