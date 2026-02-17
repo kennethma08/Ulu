@@ -1,0 +1,371 @@
+﻿@model WhatsappClient.Controllers.AccountController.ProfileVm
+
+@{
+    ViewData["Title"] = "Perfil y contraseña";
+    var successMsg = ViewData["Success"] as string;
+}
+
+<div class="profile-wrapper row justify-content-center">
+    <div class="col-md-10 col-lg-8 col-xl-7">
+        <div class="card profile-card shadow-sm">
+            <div class="profile-card-header">
+                <div class="d-flex align-items-center gap-2">
+                    <div class="profile-avatar">
+                        <i class="bi bi-person-badge-fill"></i>
+                    </div>
+                    <div>
+                        <h5 class="mb-0">Perfil y contraseña</h5>
+                        <p class="mb-0 small text-white-50">
+                            Administre sus datos y credenciales de acceso.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card-body profile-card-body">
+                @* SweetAlert: mensaje de éxito *@
+                @if (!string.IsNullOrWhiteSpace(successMsg))
+                {
+                    <input type="hidden" id="profile-success-msg" value="@successMsg" />
+                }
+
+                @* Resumen de errores globales (oculto, solo para leer texto y mandarlo a SweetAlert) *@
+                <div class="d-none">
+                    <div asp-validation-summary="ModelOnly"
+                         class="profile-alert-hidden"
+                         data-profile-errors="true">
+                    </div>
+                </div>
+
+                <form asp-action="Profile" method="post" class="profile-form">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" asp-for="Id" />
+
+                    <div class="row g-4">
+                        <!-- Columna izquierda: Datos del perfil -->
+                        <div class="col-12 col-lg-6">
+                            <div class="profile-section mb-1">
+                                <div class="profile-section-header">
+                                    <div class="d-flex align-items-center gap-2">
+                                        <div class="bullet"></div>
+                                        <h6 class="mb-0">Datos del perfil</h6>
+                                    </div>
+                                    <span class="badge badge-soft-violet">
+                                        Información básica
+                                    </span>
+                                </div>
+
+                                <div class="mt-3">
+                                    <div class="mb-3">
+                                        <label asp-for="Name" class="form-label profile-label"></label>
+                                        <div class="input-group profile-input-group">
+                                            <span class="input-group-text">
+                                                <i class="bi bi-person"></i>
+                                            </span>
+                                            <input asp-for="Name" class="form-control profile-input" />
+                                        </div>
+                                        <span asp-validation-for="Name" class="text-danger small"></span>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label asp-for="Email" class="form-label profile-label"></label>
+                                        <div class="input-group profile-input-group">
+                                            <span class="input-group-text">
+                                                <i class="bi bi-envelope"></i>
+                                            </span>
+                                            <input asp-for="Email" class="form-control profile-input" />
+                                        </div>
+                                        <span asp-validation-for="Email" class="text-danger small"></span>
+                                    </div>
+
+                                    <div class="mb-0">
+                                        <label asp-for="Company" class="form-label profile-label"></label>
+                                        <div class="input-group profile-input-group">
+                                            <span class="input-group-text">
+                                                <i class="bi bi-building"></i>
+                                            </span>
+                                            <input asp-for="Company" class="form-control profile-input" />
+                                        </div>
+                                        <span asp-validation-for="Company" class="text-danger small"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Columna derecha: Cambio de contraseña -->
+                        <div class="col-12 col-lg-6">
+                            <div class="profile-section mb-1">
+                                <div class="profile-section-header">
+                                    <div class="d-flex align-items-center gap-2">
+                                        <div class="bullet bullet-warning"></div>
+                                        <h6 class="mb-0">Cambio de contraseña</h6>
+                                    </div>
+                                    <span class="badge badge-soft-warning">
+                                        Seguridad
+                                    </span>
+                                </div>
+
+                                <p class="text-muted small mt-2 mb-3 profile-help-text">
+                                    Si no desea cambiar la contraseña, deje estos campos en blanco.
+                                </p>
+
+                                <div class="password-panel mb-2">
+                                    <div class="mb-3">
+                                        <label asp-for="CurrentPassword" class="form-label profile-label"></label>
+                                        <div class="input-group profile-input-group">
+                                            <span class="input-group-text">
+                                                <i class="bi bi-lock"></i>
+                                            </span>
+                                            <input asp-for="CurrentPassword"
+                                                   class="form-control profile-input"
+                                                   autocomplete="current-password" />
+                                        </div>
+                                        <span asp-validation-for="CurrentPassword" class="text-danger small"></span>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label asp-for="NewPassword" class="form-label profile-label"></label>
+                                        <div class="input-group profile-input-group">
+                                            <span class="input-group-text">
+                                                <i class="bi bi-shield-lock"></i>
+                                            </span>
+                                            <input asp-for="NewPassword"
+                                                   class="form-control profile-input"
+                                                   autocomplete="new-password" />
+                                        </div>
+                                        <span asp-validation-for="NewPassword" class="text-danger small"></span>
+                                    </div>
+
+                                    <div class="mb-0">
+                                        <label asp-for="ConfirmPassword" class="form-label profile-label"></label>
+                                        <div class="input-group profile-input-group">
+                                            <span class="input-group-text">
+                                                <i class="bi bi-check2-circle"></i>
+                                            </span>
+                                            <input asp-for="ConfirmPassword"
+                                                   class="form-control profile-input"
+                                                   autocomplete="new-password" />
+                                        </div>
+                                        <span asp-validation-for="ConfirmPassword" class="text-danger small"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-end align-items-center mt-3">
+                        <button type="submit" class="btn btn-save-profile">
+                            <i class="bi bi-save me-1"></i>
+                            Guardar cambios
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Styles {
+    <style>
+        :root {
+            --violet-900: #310353;
+            --violet-600: #A860E0;
+            --violet-500: #B57EDC;
+            --violet-300: #CDABE6;
+            --bs-border-color: #ece6f6;
+            --card-radius: 16px;
+        }
+
+        .profile-wrapper {
+            margin-top: 1.25rem;
+        }
+
+        .profile-card {
+            border-radius: var(--card-radius);
+            border: 1px solid var(--bs-border-color);
+            box-shadow: 0 6px 20px rgba(49, 3, 83, 0.08);
+            overflow: hidden;
+            background: #ffffff;
+        }
+
+        .profile-card-header {
+            padding: 1rem 1.25rem;
+            background-image: linear-gradient(120deg, var(--violet-900), var(--violet-600));
+            color: #fff;
+        }
+
+            .profile-card-header h5 {
+                font-weight: 600;
+            }
+
+        .profile-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+            .profile-avatar i {
+                font-size: 1.4rem;
+            }
+
+        .profile-card-body {
+            padding: 1.5rem 1.75rem 1.25rem;
+        }
+
+        .profile-section {
+            border-radius: 12px;
+        }
+
+        .profile-section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: .5rem;
+        }
+
+            .profile-section-header h6 {
+                font-weight: 600;
+                color: #3e2464;
+            }
+
+            .profile-section-header .bullet {
+                width: 10px;
+                height: 10px;
+                border-radius: 999px;
+                background: var(--violet-600);
+            }
+
+            .profile-section-header .bullet-warning {
+                background: #f4b000;
+            }
+
+        .badge-soft-violet {
+            background: #f6f0ff;
+            color: var(--violet-900);
+            border-radius: 999px;
+            font-size: .7rem;
+            padding: .25rem .6rem;
+        }
+
+        .badge-soft-warning {
+            background: #fff7dc;
+            color: #8c6a00;
+            border-radius: 999px;
+            font-size: .7rem;
+            padding: .25rem .6rem;
+        }
+
+        .profile-label {
+            font-size: .85rem;
+            font-weight: 500;
+            color: #4a3b71;
+        }
+
+        .profile-input-group .input-group-text {
+            border-color: #e7dffc;
+            background: #f9f5ff;
+            color: var(--violet-900);
+        }
+
+        .profile-input-group .form-control.profile-input {
+            border-color: #e7dffc;
+        }
+
+        .profile-input:focus {
+            border-color: var(--violet-600);
+            box-shadow: 0 0 0 .15rem rgba(168, 96, 224, 0.15);
+        }
+
+        .profile-help-text {
+            background: #fbf7ff;
+            border-radius: 10px;
+            padding: .6rem .75rem;
+            border: 1px dashed #e2d3ff;
+        }
+
+        .password-panel {
+            background: #fbf9ff;
+            border-radius: 12px;
+            padding: .8rem .85rem .4rem;
+            border: 1px solid #efe6ff;
+        }
+
+        .btn-save-profile {
+            border-radius: 999px;
+            border: 0;
+            background-image: linear-gradient(120deg, var(--violet-900), var(--violet-600));
+            color: #fff;
+            padding-inline: 1.5rem;
+            font-weight: 500;
+            box-shadow: 0 6px 18px rgba(49, 3, 83, 0.25);
+        }
+
+            .btn-save-profile:hover {
+                filter: brightness(1.05);
+                box-shadow: 0 8px 22px rgba(49, 3, 83, 0.3);
+                color: #fff;
+            }
+
+        .profile-form span.text-danger.small {
+            display: block;
+            margin-top: .15rem;
+        }
+
+        @@media (max-width: 575.98px) {
+            .profile-card-body {
+                padding: 1.25rem 1rem 1rem;
+            }
+
+            .profile-wrapper {
+                margin-top: .75rem;
+            }
+        }
+    </style>
+}
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            // Errores globales -> SweetAlert (contenedor oculto)
+            var errorDiv = document.querySelector('[data-profile-errors="true"]');
+            if (errorDiv) {
+                var errorText = (errorDiv.textContent || '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+
+                if (errorText.length > 0) {
+                    if (window.showError) {
+                        window.showError(errorText, 'Perfil y contraseña');
+                    } else if (window.SwalUlu || window.Swal) {
+                        (window.SwalUlu || window.Swal).fire({
+                            icon: 'error',
+                            title: 'Perfil y contraseña',
+                            text: errorText
+                        });
+                    }
+                }
+            }
+
+            // Éxito -> SweetAlert
+            var successInput = document.getElementById('profile-success-msg');
+            if (successInput && successInput.value) {
+                var msg = successInput.value;
+                if (window.showSuccess) {
+                    window.showSuccess(msg, 'Perfil y contraseña');
+                } else if (window.SwalUlu || window.Swal) {
+                    (window.SwalUlu || window.Swal).fire({
+                        icon: 'success',
+                        title: 'Perfil y contraseña',
+                        text: msg
+                    });
+                }
+            }
+        });
+    </script>
+}

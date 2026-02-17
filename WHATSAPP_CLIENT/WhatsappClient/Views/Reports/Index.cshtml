@@ -1,0 +1,235 @@
+﻿@{
+    ViewData["Title"] = "Analíticas generales";
+    var from = (string)ViewBag.From;
+    var to = (string)ViewBag.To;
+}
+
+<div class="container-fluid py-4">
+    <!-- Filtro de fechas -->
+    <div class="card shadow-sm mb-3">
+        <div class="card-body">
+            <div class="d-flex flex-wrap align-items-center gap-2 w-100">
+                <div class="input-group" style="max-width: 380px;">
+                    <span class="input-group-text">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-calendar3" viewBox="0 0 16 16">
+                            <path d="M14 3h-1V1h-1v2H4V1H3v2H2a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zM1 6v6a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6H1z" />
+                        </svg>
+                    </span>
+                    <input id="dateRange" type="text" class="form-control" readonly
+                           value="@from a @to" placeholder="Selecciona rango" />
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- KPIs principales -->
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-md-4">
+            <div class="card kpi-card kpi-1 h-100">
+                <div class="card-body">
+                    <div class="kpi-label mb-1">Total de mensajes</div>
+                    <div id="kpiMensajes" class="display-6 kpi-value">—</div>
+                    <div id="kpiMensajesRange" class="text-white small"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="card kpi-card kpi-1 h-100">
+                <div class="card-body">
+                    <div class="kpi-label mb-1">Conversaciones cerradas</div>
+                    <div id="kpiCierres" class="display-6 kpi-value">—</div>
+                    <div id="kpiCierresRange" class="text-white small"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="card kpi-card kpi-1 h-100">
+                <div class="card-body">
+                    <div class="kpi-label mb-1">Clientes nuevos</div>
+                    <div id="kpiClientesNuevos" class="display-6 kpi-value">—</div>
+                    <div id="kpiClientesRange" class="text-white small"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- KPIs secundarios tipo Google Analytics -->
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-md-3">
+            <div class="card stat-card h-100">
+                <div class="card-body">
+                    <div class="stat-label">Conversaciones abiertas</div>
+                    <div id="kpiAbiertas" class="stat-value">—</div>
+                    <div class="stat-hint">Sesiones activas en el rango</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-3">
+            <div class="card stat-card h-100">
+                <div class="card-body">
+                    <div class="stat-label">Clientes activos</div>
+                    <div id="kpiClientesActivos" class="stat-value">—</div>
+                    <div class="stat-hint">Con mensajes recientes</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-3">
+            <div class="card stat-card h-100">
+                <div class="card-body">
+                    <div class="stat-label">Países activos</div>
+                    <div id="kpiPaises" class="stat-value">—</div>
+                    <div class="stat-hint">Distribución geográfica</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-3">
+            <div class="card stat-card h-100">
+                <div class="card-body">
+                    <div class="stat-label">Msgs por conversación</div>
+                    <div id="kpiPromMsgs" class="stat-value">—</div>
+                    <div class="stat-hint">Promedio en el rango</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-lg-8">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h3 class="h6 mb-2">Mensajes por fecha</h3>
+                    <div class="chart-wrap"><canvas id="lineMensajes"></canvas></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h3 class="h6 mb-2">Países de los contactos</h3>
+                    <div class="chart-wrap-sm mb-3">
+                        <canvas id="chartPaises"></canvas>
+                    </div>
+                    <ul id="listaPaises" class="list-unstyled small mb-0 country-list"></ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tabla Top clientes -->
+    <div class="card">
+        <div class="card-body">
+            <h3 class="h6 mb-2">Top clientes por mensajes</h3>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Cliente</th>
+                            <th class="text-end">Mensajes</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tablaClientes"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Config al JS -->
+<script>
+    window.REPORTS_CFG = {
+        from: '@from',
+        to: '@to',
+        urls: {
+            kpis: '@Url.Action("Kpis", "Report")',
+            series: '@Url.Action("Series", "Report")',
+            countries: '@Url.Action("Countries", "Report")',
+            topclients: '@Url.Action("TopClients", "Report")'
+        }
+    };
+</script>
+
+@section Styles {
+    <!-- CSS del picker -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daterangepicker/daterangepicker.css" />
+
+    <!-- Banderas gráficas (flag-icons) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flag-icons@6.7.0/css/flag-icons.min.css" />
+
+    <link rel="stylesheet" href="/assets/css/Reports.css" />
+    <style>
+        :root {
+            --violet-900: #310353;
+            --violet-600: #A860E0;
+            /* Colores para los gráficos */
+            --chart-line: #A860E0;
+            --chart-line-fill: rgba(168, 96, 224, 0.15);
+            --chart-pie-1: #A860E0;
+            --chart-pie-2: #CDABE6;
+            --chart-pie-3: #F4C2FF;
+            --chart-pie-4: #7C4DFF;
+            --chart-pie-5: #B57EDC;
+        }
+
+        .stat-card {
+            border-radius: 14px;
+            border: 1px solid #ece6f6;
+            box-shadow: 0 4px 14px rgba(49, 3, 83, 0.04);
+        }
+
+        .stat-label {
+            font-size: .85rem;
+            font-weight: 500;
+            color: #4a3b71;
+            margin-bottom: .15rem;
+        }
+
+        .stat-value {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: #310353;
+        }
+
+        .stat-hint {
+            font-size: .75rem;
+            color: #8b7ca8;
+        }
+
+        .chart-wrap-sm {
+            position: relative;
+            height: 220px;
+        }
+
+            .chart-wrap-sm > canvas {
+                display: block;
+                width: 100% !important;
+                height: 100% !important;
+            }
+
+        .country-list li {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: .15rem 0;
+            border-bottom: 1px dashed #f0e9ff;
+        }
+
+            .country-list li:last-child {
+                border-bottom: 0;
+            }
+    </style>
+}
+
+@section Scripts {
+    <!-- jQuery + moment + locale ES (requisitos de daterangepicker) -->
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/min/moment.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/locale/es.js"></script>
+
+    <!-- Date Range Picker -->
+    <script src="https://cdn.jsdelivr.net/npm/daterangepicker/daterangepicker.min.js"></script>
+
+    <!-- Chart.js y tu lógica -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script src="/js/ReportsGeneral.js?v=2"></script>
+}

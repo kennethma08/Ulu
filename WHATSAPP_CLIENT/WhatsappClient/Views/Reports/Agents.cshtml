@@ -1,0 +1,478 @@
+﻿@using System.Linq
+@using WhatsappClient.Models
+@model IEnumerable<UserDto>
+
+@{
+    ViewData["Title"] = "Analíticas por agente";
+
+    // Estos dos vienen del controlador de reportes (From / To en formato yyyy-MM-dd)
+    var from = (string)ViewBag.From;
+    var to = (string)ViewBag.To;
+
+    var agents = Model ?? Enumerable.Empty<UserDto>();
+}
+
+<div class="container-fluid py-4">
+    <!-- Filtro de fechas + selección de agente -->
+    <div class="card shadow-sm mb-3">
+        <div class="card-body">
+            <div class="row g-3 align-items-center">
+                <div class="col-12 col-md-4">
+                    <label class="form-label mb-1 small text-muted">Rango de fechas</label>
+                    <div class="input-group">
+                        <span class="input-group-text">
+                            <i class="bi bi-calendar3"></i>
+                        </span>
+                        <input id="dateRangeAgents"
+                               type="text"
+                               class="form-control"
+                               readonly
+                               value="@from a @to"
+                               placeholder="Selecciona rango" />
+                    </div>
+                </div>
+                <div class="col-12 col-md-4">
+                    <label class="form-label mb-1 small text-muted">Agente</label>
+                    <select id="agentSelect" class="form-select">
+                        <option value="">Seleccione un agente</option>
+                        @foreach (var a in agents.OrderBy(x => x.Name))
+                        {
+                            <option value="@a.Id">@a.Name (@a.Email)</option>
+                        }
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- KPIs por agente -->
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-md-3">
+            <div class="card kpi-card kpi-1 h-100">
+                <div class="card-body">
+                    <div class="kpi-label mb-1">Conversaciones cerradas</div>
+                    <div id="kpiAgentClosed" class="display-6 kpi-value">—</div>
+                    <div class="text-white small">En el rango seleccionado</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-3">
+            <div class="card kpi-card kpi-1 h-100">
+                <div class="card-body">
+                    <div class="kpi-label mb-1">Última actividad</div>
+                    <div id="kpiAgentLastActivity" class="display-6 kpi-value">—</div>
+                    <div class="text-white small">Hora local (Costa Rica)</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-3">
+            <div class="card kpi-card kpi-1 h-100">
+                <div class="card-body">
+                    <div class="kpi-label mb-1">Estado</div>
+                    <div id="kpiAgentStatus" class="display-6 kpi-value">—</div>
+                    <div class="text-white small">En línea / Desconectado</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-3">
+            <div class="card kpi-card kpi-1 h-100">
+                <div class="card-body">
+                    <div class="kpi-label mb-1">Duración promedio</div>
+                    <div id="kpiAgentAvgDuration" class="display-6 kpi-value">—</div>
+                    <div class="text-white small">Minutos por conversación</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tabla de conversaciones cerradas por agente -->
+    <div class="card">
+        <div class="card-body">
+            <h3 class="h6 mb-3">Conversaciones cerradas por agente</h3>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            @* 🔴 SIN ID: solo datos relevantes *@
+                            <th>Teléfono cliente</th>
+                            <th>Inicio</th>
+                            <th>Cierre</th>
+                            <th>Duración (min)</th>
+                            <th>Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tablaCerradas"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal tipo "historial" -->
+<div class="modal fade" id="convModal" tabindex="-1" aria-labelledby="convModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content modal-themed">
+            <div class="modal-header">
+                <h5 class="modal-title w-100 text-center">
+                    Conversaciones — <span id="convModalContactName"></span>
+                    <small class="text-white" id="convModalContactPhone"></small>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row" style="min-height:50vh;">
+                    <div class="col-md-4 border-end">
+                        <div class="list-group" id="convList"></div>
+                    </div>
+                    <div class="col-md-8">
+                        <div id="convInfo" class="mb-2 text-muted small"></div>
+                        <div id="convMessages" style="max-height:45vh; overflow:auto;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer justify-content-center">
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Styles {
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daterangepicker/daterangepicker.css" />
+    <link rel="stylesheet" href="/assets/css/Reports.css" />
+
+    <style>
+        /* Estilos del modal similar al de la vista de Contactos */
+        .modal-themed .modal-content {
+            border-radius: 16px;
+        }
+
+        .modal-themed .modal-header {
+            position: relative;
+            background: #7f4ca5;
+            color: #fff;
+        }
+
+            .modal-themed .modal-header .btn-close {
+                position: absolute;
+                right: .75rem;
+                top: .75rem;
+                filter: invert(1) grayscale(100%);
+                opacity: .85;
+            }
+
+                .modal-themed .modal-header .btn-close:hover {
+                    opacity: 1;
+                }
+
+        #convList {
+            max-height: 45vh;
+            overflow: auto;
+        }
+    </style>
+}
+
+@section Scripts {
+    <!-- jQuery + moment + locale ES (requisitos de daterangepicker) -->
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/min/moment.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/locale/es.js"></script>
+
+    <!-- Date Range Picker -->
+    <script src="https://cdn.jsdelivr.net/npm/daterangepicker/daterangepicker.min.js"></script>
+
+    <script>
+        (function () {
+            const initialFrom = '@from';
+            const initialTo   = '@to';
+
+            const $range      = $('#dateRangeAgents');
+            const agentSelect = document.getElementById('agentSelect');
+            const tbody       = document.getElementById('tablaCerradas');
+
+            const kpiClosed       = document.getElementById('kpiAgentClosed');
+            const kpiLastActivity = document.getElementById('kpiAgentLastActivity');
+            const kpiStatus       = document.getElementById('kpiAgentStatus');
+            const kpiAvgDuration  = document.getElementById('kpiAgentAvgDuration');
+
+            // Modal estilo "historial"
+            const convModalEl      = document.getElementById('convModal');
+            const convModal        = (window.bootstrap && convModalEl)
+                ? new bootstrap.Modal(convModalEl)
+                : null;
+            const convList         = document.getElementById('convList');
+            const convInfo         = document.getElementById('convInfo');
+            const convMessages     = document.getElementById('convMessages');
+            const convTitleName    = document.getElementById('convModalContactName');
+            const convTitlePhone   = document.getElementById('convModalContactPhone');
+
+            // URLs de los endpoints del controlador Report
+            const closedByAgentBaseUrl = '@Url.Action("ClosedByAgent", "Report")';
+            const agentStatusBaseUrl   = '@Url.Action("AgentStatus", "Report")';
+
+            let currentFrom = initialFrom;
+            let currentTo   = initialTo;
+
+            moment.locale('es');
+
+            $range.daterangepicker({
+                startDate: moment(initialFrom, 'YYYY-MM-DD'),
+                endDate: moment(initialTo, 'YYYY-MM-DD'),
+                locale: {
+                    format: 'YYYY-MM-DD',
+                    applyLabel: 'Aplicar',
+                    cancelLabel: 'Cancelar',
+                    customRangeLabel: 'Personalizado'
+                },
+                ranges: {
+                    'Hoy': [moment(), moment()],
+                    'Últimos 7 días': [moment().subtract(6, 'days'), moment()],
+                    'Últimos 30 días': [moment().subtract(29, 'days'), moment()]
+                }
+            }, function (start, end) {
+                currentFrom = start.format('YYYY-MM-DD');
+                currentTo   = end.format('YYYY-MM-DD');
+                $range.val(currentFrom + ' a ' + currentTo);
+                loadAgentData();
+            });
+
+            function resetKpisAndTable() {
+                kpiClosed.textContent       = '—';
+                kpiLastActivity.textContent = '—';
+                kpiStatus.textContent       = '—';
+                kpiAvgDuration.textContent  = '—';
+                if (tbody) tbody.innerHTML = '';
+            }
+
+            function fmtDateTimeCR(isoOrText) {
+                if (!isoOrText) return '—';
+                // Si ya viene texto "humano", devuélvelo tal cual
+                if (typeof isoOrText === 'string' && isoOrText.indexOf('T') === -1 && isoOrText.indexOf('Z') === -1) {
+                    return isoOrText;
+                }
+                const d = new Date(isoOrText);
+                if (isNaN(d.getTime())) return '—';
+                return d.toLocaleString('es-CR', {
+                    timeZone: 'America/Costa_Rica',
+                    dateStyle: 'short',
+                    timeStyle: 'short'
+                });
+            }
+
+            function escapeHtml(str) {
+                return String(str)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            }
+
+            async function loadAgentData() {
+                const id = agentSelect.value;
+                if (!id) {
+                    resetKpisAndTable();
+                    return;
+                }
+
+                try {
+                    const closedUrl = closedByAgentBaseUrl
+                        + '?id=' + encodeURIComponent(id)
+                        + '&from=' + encodeURIComponent(currentFrom)
+                        + '&to=' + encodeURIComponent(currentTo);
+
+                    const statusUrl = agentStatusBaseUrl
+                        + '?id=' + encodeURIComponent(id);
+
+                    // Llamamos al reporte + estado del agente en paralelo
+                    const [resClosed, resStatus] = await Promise.all([
+                        fetch(closedUrl),
+                        fetch(statusUrl)
+                    ]);
+
+                    if (!resClosed.ok) throw new Error('Error HTTP ' + resClosed.status);
+
+                    const data  = await resClosed.json();
+                    const items = data.items || [];
+
+                    // KPI: cantidad de conversaciones cerradas
+                    kpiClosed.textContent = items.length;
+
+                    // Construir tabla y calcular duración promedio
+                    let totalMinutes = 0;
+                    let countDur     = 0;
+                    if (tbody) tbody.innerHTML = '';
+
+                    for (const c of items) {
+                        const started = c.startedAt ? new Date(c.startedAt) : null;
+                        const ended   = c.endedAt   ? new Date(c.endedAt)   : null;
+
+                        let mins = null;
+                        if (started && ended) {
+                            mins = Math.max(0, (ended - started) / 60000);
+                            totalMinutes += mins;
+                            countDur++;
+                        }
+
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td>${c.contactPhone || ''}</td>
+                            <td>${started ? fmtDateTimeCR(c.startedAt) : ''}</td>
+                            <td>${ended ? fmtDateTimeCR(c.endedAt) : ''}</td>
+                            <td>${mins != null ? mins.toFixed(1) : ''}</td>
+                            <td>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-primary btn-ver-conv"
+                                        data-conv-id="${c.id}"
+                                        data-phone="${c.contactPhone || ''}">
+                                    Ver
+                                </button>
+                            </td>
+                        `;
+                        if (tbody) tbody.appendChild(tr);
+                    }
+
+                    kpiAvgDuration.textContent = countDur > 0
+                        ? (totalMinutes / countDur).toFixed(1)
+                        : '0';
+
+                    // KPI: Última actividad (fecha/hora) + Estado
+                    if (resStatus.ok) {
+                        const st = await resStatus.json();
+                        if (st && st.success) {
+                            kpiLastActivity.textContent = st.lastActivityLocal || 'N/D';
+                            kpiStatus.textContent       = st.status || 'N/D';
+                        } else {
+                            kpiLastActivity.textContent = 'N/D';
+                            kpiStatus.textContent       = 'N/D';
+                        }
+                    } else {
+                        kpiLastActivity.textContent = 'N/D';
+                        kpiStatus.textContent       = 'N/D';
+                    }
+
+                } catch (e) {
+                    console.error(e);
+                    kpiClosed.textContent       = '0';
+                    kpiAvgDuration.textContent  = '0';
+                    kpiLastActivity.textContent = 'N/D';
+                    kpiStatus.textContent       = 'N/D';
+                    if (tbody) tbody.innerHTML = '';
+                }
+            }
+
+            function renderConvMessages(msgs) {
+                if (!convMessages) return;
+                convMessages.innerHTML = '';
+
+                if (!msgs.length) {
+                    convMessages.innerHTML = '<div class="p-2 text-muted">Sin mensajes</div>';
+                    return;
+                }
+
+                msgs.sort((a, b) => new Date(a.sentAt) - new Date(b.sentAt));
+
+                msgs.forEach(m => {
+                    const isAgent = (m.sender === 'agent' || m.sender === 'agente');
+
+                    const wrap = document.createElement('div');
+                    wrap.className = 'mb-3 ' + (isAgent ? 'text-end' : 'text-start');
+
+                    wrap.innerHTML = `
+                        <div class="small text-muted">${fmtDateTimeCR(m.sentAt)}</div>
+                        <div class="p-2"
+                             style="background:${isAgent ? '#b57edc' : '#cdabe6'}; border-radius:10px; display:inline-block; max-width:75%;">
+                            <div class="fw-semibold mb-1">${isAgent ? 'Agente' : 'Contacto'}</div>
+                            ${escapeHtml(m.message || '')}
+                        </div>
+                    `;
+
+                    convMessages.appendChild(wrap);
+                });
+
+                convMessages.scrollTop = convMessages.scrollHeight;
+            }
+
+            async function openConversationModal(convId, phone, startedText, endedText) {
+                if (!convModal) return;
+
+                // Título simple, sin "Sesión #ID"
+                if (convTitleName)  convTitleName.textContent  = 'Conversación';
+                if (convTitlePhone) convTitlePhone.textContent = phone || '';
+
+                if (convList) {
+                    convList.innerHTML = '';
+                    const a = document.createElement('a');
+                    a.href = '#';
+                    a.className = 'list-group-item list-group-item-action active';
+                    a.innerHTML = `
+                        <div class="d-flex justify-content-between">
+                            <div>
+                                <div class="small text-muted">Inicio: ${startedText || '—'}</div>
+                            </div>
+                            <div class="text-end">
+                                <div class="small text-muted">Cierre: ${endedText || '—'}</div>
+                            </div>
+                        </div>
+                    `;
+                    convList.appendChild(a);
+                }
+
+                if (convInfo) {
+                    convInfo.textContent = 'Conversación';
+                }
+
+                if (convMessages) {
+                    convMessages.innerHTML = '<div class="p-2 text-muted">Cargando mensajes...</div>';
+                }
+
+                try {
+                    const res = await fetch('/Chat/GetConversationMessages?conversationId=' + encodeURIComponent(convId));
+                    if (!res.ok) throw new Error('Error HTTP ' + res.status);
+
+                    const data = await res.json();
+                    const messages = data.messages || [];
+                    renderConvMessages(messages);
+                } catch (err) {
+                    console.error(err);
+                    if (convMessages) {
+                        convMessages.innerHTML = '<div class="p-2 text-danger">Error al cargar los mensajes.</div>';
+                    }
+                }
+
+                convModal.show();
+            }
+
+            // Click en botón "Ver" -> abre modal estilo historial
+            if (tbody) {
+                tbody.addEventListener('click', function (ev) {
+                    const btn = ev.target.closest('.btn-ver-conv');
+                    if (!btn || !convModal) return;
+
+                    const convId = btn.getAttribute('data-conv-id');
+                    const phone  = btn.getAttribute('data-phone') || '';
+
+                    const tr  = btn.closest('tr');
+                    const tds = tr ? tr.getElementsByTagName('td') : [];
+
+                    // ⚠️ Como YA NO hay columna ID, los índices cambian:
+                    // 0 = Teléfono, 1 = Inicio, 2 = Cierre, 3 = Duración
+                    const startedText = tds[1] ? tds[1].textContent.trim() : '';
+                    const endedText   = tds[2] ? tds[2].textContent.trim() : '';
+
+                    if (!convId) return;
+
+                    openConversationModal(convId, phone, startedText, endedText);
+                });
+            }
+
+            if (agentSelect) {
+                agentSelect.addEventListener('change', loadAgentData);
+
+                // Si ya viene uno seleccionado por defecto, cargar
+                if (agentSelect.value) {
+                    loadAgentData();
+                }
+            }
+        })();
+    </script>
+}
