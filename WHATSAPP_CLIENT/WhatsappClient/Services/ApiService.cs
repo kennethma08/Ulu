@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Linq;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
@@ -31,7 +32,6 @@ namespace WhatsappClient.Services
             _accessor = accessor;
         }
 
-        // ========= Empresa / Headers =========
         private string CurrentEmpresaId()
         {
             var emp = _accessor.HttpContext?.Session?.GetString("COMPANY_ID");
@@ -101,7 +101,6 @@ namespace WhatsappClient.Services
                 using var doc = JsonDocument.Parse(payloadJson);
                 var root = doc.RootElement;
 
-                // sub
                 if (root.TryGetProperty("sub", out var subEl))
                 {
                     if (subEl.ValueKind == JsonValueKind.String && int.TryParse(subEl.GetString(), out var id))
@@ -110,7 +109,6 @@ namespace WhatsappClient.Services
                         return idNum;
                 }
 
-                // nameid (claim estándar en algunos tokens)
                 if (root.TryGetProperty("nameid", out var nameIdEl))
                 {
                     if (nameIdEl.ValueKind == JsonValueKind.String && int.TryParse(nameIdEl.GetString(), out var id2))
@@ -179,7 +177,21 @@ namespace WhatsappClient.Services
             return resp;
         }
 
-        // ========= Helpers de lista =========
+        private async Task<HttpResponseMessage> PostWithRetryAsync(string url, HttpContent content)
+        {
+            ApplyHeaders();
+            var resp = await _http.PostAsync(url, content);
+
+            if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                _http.DefaultRequestHeaders.Authorization = null;
+                ApplyHeaders();
+                resp = await _http.PostAsync(url, content);
+            }
+
+            return resp;
+        }
+
         private async Task<List<T>> GetListAsync<T>(string url)
         {
             var resp = await GetWithRetryAsync(url);
@@ -188,9 +200,6 @@ namespace WhatsappClient.Services
             return DeserializeFlexibleList<T>(body);
         }
 
-        // ========= ENDPOINTS USADOS POR EL CLIENTE =========
-
-        // --- Contactos / Conversaciones / Mensajes ---
         public Task<List<ContactDto>> ObtenerContactosAsync()
             => GetListAsync<ContactDto>("api/general/contact");
 
@@ -200,7 +209,89 @@ namespace WhatsappClient.Services
         public Task<List<MessageDto>> ObtenerMensajesAsync()
             => GetListAsync<MessageDto>("api/general/message");
 
-        // --- USUARIOS / SEGURIDAD (api/seguridad/...) ---
+        public async Task<List<ConversationPanelItem>> ObtenerConversacionesPanelAsync()
+        {
+            var resp = await GetWithRetryAsync("api/general/conversation/panel");
+            if (!resp.IsSuccessStatusCode) return new List<ConversationPanelItem>();
+
+            var body = await resp.Content.ReadAsStringAsync();
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                var items = ExtraerItems(doc.RootElement);
+
+                var list = new List<ConversationPanelItem>();
+                foreach (var e in items)
+                {
+                    list.Add(new ConversationPanelItem
+                    {
+                        Id = GetIntFlex(e, "id", "Id") ?? 0,
+                        ContactId = GetIntFlex(e, "contact_id", "ContactId", "contactId"),
+                        Status = GetStringFlex(e, "status", "Status") ?? "open",
+                        StartedAt = GetDateFlex(e, "started_at", "StartedAt", "startedAt"),
+                        LastActivityAt = GetDateFlex(e, "last_activity_at", "LastActivityAt", "lastActivityAt"),
+                        AgentRequestedAt = GetDateFlex(e, "agent_requested_at", "AgentRequestedAt", "agentRequestedAt"),
+                        AssignedUserId = GetIntFlex(e, "assigned_user_id", "AssignedUserId", "assignedUserId"),
+                        IsOnHold = GetBoolFlex(e, "is_on_hold", "IsOnHold") ?? false,
+                        OnHoldReason = GetStringFlex(e, "on_hold_reason", "OnHoldReason")
+                    });
+                }
+                return list.Where(x => x.Id > 0).ToList();
+            }
+            catch
+            {
+                return new List<ConversationPanelItem>();
+            }
+        }
+
+        public async Task<(bool ok, string? error)> AssignConversationAsync(int conversationId, int toUserId)
+        {
+            if (conversationId <= 0 || toUserId <= 0) return (false, "Parámetros inválidos.");
+
+            var payload = JsonSerializer.Serialize(new { toUserId });
+            var resp = await PostWithRetryAsync($"api/general/conversation/{conversationId}/assign",
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode) return (false, body);
+            return (true, null);
+        }
+
+        public async Task<(bool ok, string? error)> ReleaseConversationAsync(int conversationId)
+        {
+            if (conversationId <= 0) return (false, "Parámetros inválidos.");
+
+            var resp = await PostWithRetryAsync($"api/general/conversation/{conversationId}/release",
+                new StringContent("{}", Encoding.UTF8, "application/json"));
+
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode) return (false, body);
+            return (true, null);
+        }
+
+        public async Task<(bool ok, string? error)> UpsertConversationStatusAsync(int conversationId, int? contactId, DateTime? startedAt, string status)
+        {
+            if (conversationId <= 0) return (false, "conversationId inválido.");
+            if (string.IsNullOrWhiteSpace(status)) return (false, "status inválido.");
+
+            var payload = new
+            {
+                Id = conversationId,
+                Contact_Id = contactId,
+                Started_At = startedAt ?? DateTime.UtcNow,
+                Status = status.Trim(),
+                Last_Activity_At = DateTime.UtcNow
+            };
+
+            var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { PropertyNamingPolicy = null });
+
+            var resp = await PostWithRetryAsync("api/general/conversation/upsert",
+                new StringContent(json, Encoding.UTF8, "application/json"));
+
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode) return (false, body);
+            return (true, null);
+        }
 
         public async Task<List<UserDto>> GetUsuariosAsync()
         {
@@ -308,7 +399,6 @@ namespace WhatsappClient.Services
             return $"[{(int)resp.StatusCode}] {url}\n{body}";
         }
 
-        // ========= PATCH nombre de agente =========
         public async Task<bool> UpdateNombreAgenteAsync(int idUser, string name)
         {
             HttpRequestMessage BuildReq() => new HttpRequestMessage(
@@ -337,7 +427,6 @@ namespace WhatsappClient.Services
             return resp.IsSuccessStatusCode;
         }
 
-        // ========= PATCH nombre de contacto =========
         public async Task<bool> UpdateNombreContactoAsync(int idContact, string name)
         {
             HttpRequestMessage BuildReq() => new HttpRequestMessage(
@@ -365,11 +454,8 @@ namespace WhatsappClient.Services
             return resp.IsSuccessStatusCode;
         }
 
-        // ========= PERFIL DE USUARIO DESDE CLIENTE =========
-
         public async Task<bool> UpdatePerfilUsuarioAsync(int idUser, string name, string email, string company)
         {
-            // Fallback: si llega 0, intentar sacar el id desde el JWT de sesión
             if (idUser <= 0)
             {
                 var raw = _accessor.HttpContext?.Session?.GetString("JWT_TOKEN")
@@ -410,7 +496,6 @@ namespace WhatsappClient.Services
 
         public async Task<(bool ok, string? error)> ChangePasswordAsync(int idUser, string currentPassword, string newPassword)
         {
-            // Igual que arriba: si no viene id válido, intentar leer del JWT
             if (idUser <= 0)
             {
                 var raw = _accessor.HttpContext?.Session?.GetString("JWT_TOKEN")
@@ -459,15 +544,10 @@ namespace WhatsappClient.Services
                     return (false, msg);
                 }
             }
-            catch
-            {
-                // nada
-            }
+            catch { }
 
             return (true, null);
         }
-
-        // ========= JSON utils =========
 
         private static List<T> DeserializeFlexibleList<T>(string body)
         {
@@ -661,6 +741,21 @@ namespace WhatsappClient.Services
                 return null;
 
             return u;
+        }
+
+        public class ConversationPanelItem
+        {
+            public int Id { get; set; }
+            public int? ContactId { get; set; }
+            public string Status { get; set; } = "open";
+            public DateTime? StartedAt { get; set; }
+            public DateTime? LastActivityAt { get; set; }
+            public DateTime? AgentRequestedAt { get; set; }
+            public int? AssignedUserId { get; set; }
+
+            // NUEVO
+            public bool IsOnHold { get; set; }
+            public string? OnHoldReason { get; set; }
         }
     }
 }

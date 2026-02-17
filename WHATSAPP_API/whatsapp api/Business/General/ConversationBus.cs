@@ -186,7 +186,7 @@ namespace Whatsapp_API.Business.General
             dbC.Rating = c.Rating ?? dbC.Rating;
             dbC.ClosedByUserId = c.ClosedByUserId ?? dbC.ClosedByUserId;
 
-            // hold (tu versión anterior NO lo guardaba)
+            // hold
             dbC.IsOnHold = c.IsOnHold;
             dbC.OnHoldReason = c.OnHoldReason;
             dbC.OnHoldAt = c.OnHoldAt;
@@ -303,12 +303,15 @@ namespace Whatsapp_API.Business.General
             var eid = EmpresaIdActual();
             var (meId, _, isAdmin) = GetMe();
 
+            // Filtrar conversaciones que solicitan agente
             var q = _db.Conversations
                 .AsNoTracking()
+                .Include(x => x.Contact) // Incluir contacto para mostrar nombre en la card
                 .Where(x => x.CompanyId == eid && x.AgentRequestedAt != null);
 
-            if (!isAdmin)
-                q = q.Where(x => x.AssignedUserId == null || x.AssignedUserId == meId);
+            // IMPORTANTE: Ya no filtramos por usuario asignado.
+            // Todos los agentes pueden ver todas las conversaciones para saber que existen (Read-Only),
+            // pero el front bloqueará la escritura si AssignedUserId != meId.
 
             var projected = q
                 .OrderByDescending(x => x.LastActivityAt ?? x.StartedAt)
@@ -316,14 +319,25 @@ namespace Whatsapp_API.Business.General
                 {
                     x.Id,
                     x.ContactId,
+                    ContactName = x.Contact.Name, // Nombre para la card
                     x.Status,
                     x.StartedAt,
                     x.LastActivityAt,
                     x.EndedAt,
                     x.AgentRequestedAt,
+
+                    // SEMÁFORO Y BLOQUEO
                     x.AssignedUserId,
                     x.AssignedAt,
-                    x.AssignedByUserId
+                    x.AssignedByUserId,
+
+                    // ESTADO EN ESPERA (NARANJA)
+                    x.IsOnHold,
+                    x.OnHoldReason,
+                    x.OnHoldAt,
+
+                    // Helper para el front: saber si es MÍA
+                    IsMine = x.AssignedUserId == meId
                 })
                 .ToList();
 
@@ -341,20 +355,27 @@ namespace Whatsapp_API.Business.General
             var dbC = _db.Conversations.FirstOrDefault(x => x.Id == conversationId && x.CompanyId == eid);
             if (dbC == null) return new() { Exitoso = false, Mensaje = "No encontrado", StatusCode = 404 };
 
-            if (!dbC.AgentRequestedAt.HasValue)
-                return new() { Exitoso = false, Mensaje = "La conversación no tiene solicitud de agente.", StatusCode = 409 };
-
+            // Reglas de negocio para Agentes (No Admins)
             if (!isAdmin)
             {
-                if (!dbC.AssignedUserId.HasValue)
+                // Si la conversación ya tiene dueño...
+                if (dbC.AssignedUserId.HasValue)
                 {
-                    if (!toUserId.HasValue || toUserId.Value != meId)
-                        return new() { Exitoso = false, Mensaje = "Solo podés tomar la conversación para vos.", StatusCode = 403 };
+                    // ...y no soy yo, ESTÁ BLOQUEADA. No puedo tocarla.
+                    if (dbC.AssignedUserId.Value != meId)
+                    {
+                        return new() { Exitoso = false, Mensaje = "La conversación ya está asignada a otro agente.", StatusCode = 403 };
+                    }
+                    // ...si soy yo, PUEDO transferirla (Assign a otro ID) o soltarla (Assign null).
                 }
                 else
                 {
-                    if (dbC.AssignedUserId.Value != meId)
-                        return new() { Exitoso = false, Mensaje = "La conversación ya está asignada a otro agente.", StatusCode = 403 };
+                    // Si está LIBRE (Verde)...
+                    // Solo puedo asignármela a mí mismo primero.
+                    if (toUserId.HasValue && toUserId.Value != meId)
+                    {
+                        return new() { Exitoso = false, Mensaje = "Debes tomar la conversación antes de transferirla.", StatusCode = 403 };
+                    }
                 }
             }
 
@@ -365,9 +386,18 @@ namespace Whatsapp_API.Business.General
             }
 
             dbC.AssignedUserId = toUserId;
-            dbC.AssignedAt = DateTime.UtcNow;
+            dbC.AssignedAt = toUserId.HasValue ? DateTime.UtcNow : null;
             dbC.AssignedByUserId = meId;
             dbC.LastActivityAt = DateTime.UtcNow;
+
+            // Opcional: Al transferir o soltar, se podría quitar el estado de espera automáticamente.
+            // Si prefieres que se mantenga en naranja hasta que alguien le de "Resume", comenta las siguientes lineas.
+            if (dbC.IsOnHold && toUserId == null)
+            {
+                // Si se suelta a la bolsa general, quitamos el hold para que se vea verde y disponible.
+                dbC.IsOnHold = false;
+                dbC.OnHoldReason = null;
+            }
 
             _db.SaveChanges();
             return new() { Exitoso = true, Mensaje = "OK", StatusCode = 200 };

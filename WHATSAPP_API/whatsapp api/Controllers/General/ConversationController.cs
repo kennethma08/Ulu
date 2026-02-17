@@ -27,6 +27,14 @@ namespace Whatsapp_API.Controllers.General
             catch (Exception ex) { _correo.EnviarCorreoError(ex); return StatusCode(500, ex.Message); }
         }
 
+        // Endpoint principal para el panel de agentes (Cards con semáforo)
+        [HttpGet("panel")]
+        public ActionResult GetPanel()
+        {
+            try { return _bus.ListPanel().StatusCodeDescriptivo(); }
+            catch (Exception ex) { _correo.EnviarCorreoError(ex); return StatusCode(500, ex.Message); }
+        }
+
         [HttpGet("{id:int}")]
         public ActionResult Get(int id)
         {
@@ -332,6 +340,23 @@ namespace Whatsapp_API.Controllers.General
             catch (Exception ex)
             {
                 _correo.EnviarCorreoError(ex, new { id });
+                return StatusCode(500, ex.Message);
+            }
+        }
+
+        // NUEVO: Asignar / Soltar / Transferir Agente
+        [HttpPost("{id:int}/assign")]
+        public ActionResult Assign(int id, [FromBody] ConversationAssignRequest req)
+        {
+            try
+            {
+                // req.ToUserId puede ser null (para soltar) o un ID (para asignar/transferir)
+                var r = _bus.Assign(id, req.ToUserId);
+                return r.StatusCodeDescriptivo();
+            }
+            catch (Exception ex)
+            {
+                _correo.EnviarCorreoError(ex, new { id, req });
                 return StatusCode(500, ex.Message);
             }
         }

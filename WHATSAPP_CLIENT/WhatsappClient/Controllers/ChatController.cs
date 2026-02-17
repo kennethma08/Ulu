@@ -24,6 +24,21 @@ namespace WhatsappClient.Controllers
         public string Status { get; set; } = "open";
         public int? ContactId { get; set; }
         public DateTime? StartedAt { get; set; }
+        public string? Reason { get; set; }
+        public bool? ReleaseAgent { get; set; }
+    }
+
+    public class AssignConversationDto
+    {
+        public int ConversationId { get; set; }
+        public int ToUserId { get; set; }
+        public string? Reason { get; set; }
+    }
+
+    public class HoldConversationDto
+    {
+        public int ConversationId { get; set; }
+        public string Reason { get; set; } = string.Empty;
     }
 
     [Authorize]
@@ -36,6 +51,10 @@ namespace WhatsappClient.Controllers
         private static readonly ConcurrentDictionary<int, CancellationTokenSource> _autoClose = new();
         private static readonly TimeSpan AUTO_CLOSE_AFTER = TimeSpan.FromHours(23);
 
+        private const int PROFILE_AGENT = 1;
+        private const int PROFILE_ADMIN = 2;
+        private const int PROFILE_SUPERADMIN = 3;
+
         public ChatController(IConfiguration cfg, IHttpClientFactory httpFactory)
         {
             _cfg = cfg;
@@ -46,32 +65,19 @@ namespace WhatsappClient.Controllers
         [Route("", Name = "ChatRoot")]
         public IActionResult Index() => View();
 
-        // =========================
-        // Opcional: info del usuario desde JWT (sin IdentityModel)
-        // =========================
         [HttpGet]
         public IActionResult Me()
         {
-            var token = GetJwtToken();
-            var uid = TryGetClaimFromJwt(token, "sub") ?? TryGetClaimFromJwt(token, "user_id") ?? TryGetClaimFromJwt(token, "id");
-            var pid = TryGetClaimFromJwt(token, "idProfile") ?? TryGetClaimFromJwt(token, "profile_id") ?? TryGetClaimFromJwt(token, "ProfileId");
-
-            int.TryParse(uid, out var userId);
-            int.TryParse(pid, out var profileId);
-
-            var role = TryGetClaimFromJwt(token, "role") ?? "";
-
-            var isAdmin =
-                profileId == 2 || profileId == 3 ||
-                role.Equals("admin", StringComparison.OrdinalIgnoreCase) ||
-                role.Equals("superadmin", StringComparison.OrdinalIgnoreCase);
-
-            return Ok(new { userId, profileId, isAdmin });
+            var ctx = GetCurrentUserContext();
+            return Ok(new
+            {
+                userId = ctx.userId,
+                profileId = ctx.profileId,
+                isAdmin = ctx.isAdmin,
+                isAgent = ctx.isAgent
+            });
         }
 
-        // =========================
-        // Agentes (perfil 1)
-        // =========================
         [HttpGet]
         public async Task<IActionResult> GetAgents()
         {
@@ -80,18 +86,58 @@ namespace WhatsappClient.Controllers
                 var (http, ok, reason) = CreateApiClient();
                 if (!ok) return Ok(new { agents = Array.Empty<object>(), error = reason });
 
-                var resp = await http.GetAsync("api/seguridad/user/by-perfil-id/1");
-                var json = await resp.Content.ReadAsStringAsync();
-                if (!resp.IsSuccessStatusCode)
+                var ctx = GetCurrentUserContext();
+
+                var resAgents = await http.GetAsync("api/seguridad/user/by-perfil-id/1");
+                var rawAgents = await resAgents.Content.ReadAsStringAsync();
+                if (!resAgents.IsSuccessStatusCode)
                     return Ok(new { agents = Array.Empty<object>(), error = "No se pudo obtener agentes" });
 
-                using var doc = JsonDocument.Parse(json);
+                var openCountByAgent = new Dictionary<int, int>();
+                var waitingCountByAgent = new Dictionary<int, int>();
+
+                try
+                {
+                    var resPanel = await http.GetAsync("api/general/conversation/panel");
+                    if (resPanel.IsSuccessStatusCode)
+                    {
+                        using var docP = JsonDocument.Parse(await resPanel.Content.ReadAsStringAsync());
+                        foreach (var c in ExtraerItems(docP.RootElement))
+                        {
+                            var status = NormalizeStatus(GetStringFlex(c, "status", "Status") ?? "open");
+                            var assigned = GetIntFlex(c, "assigned_user_id", "AssignedUserId", "assignedUserId");
+                            var isOnHold = GetBoolFlex(c, "is_on_hold", "IsOnHold") ?? false;
+
+                            if (assigned.HasValue && assigned.Value > 0)
+                            {
+                                if (isOnHold || status == "waiting" || status == "on_hold")
+                                    waitingCountByAgent[assigned.Value] = (waitingCountByAgent.TryGetValue(assigned.Value, out var w) ? w : 0) + 1;
+                                else if (status == "open")
+                                    openCountByAgent[assigned.Value] = (openCountByAgent.TryGetValue(assigned.Value, out var v) ? v : 0) + 1;
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                using var doc = JsonDocument.Parse(rawAgents);
 
                 var agents = ExtraerItems(doc.RootElement)
-                    .Select(it => new
+                    .Select(it =>
                     {
-                        id = GetIntFlex(it, "id", "Id") ?? 0,
-                        name = GetStringFlex(it, "name", "Name", "fullName", "FullName", "username", "Username") ?? ""
+                        var id = GetIntFlex(it, "id", "Id") ?? 0;
+                        var name = GetStringFlex(it, "name", "Name", "fullName", "FullName", "username", "Username") ?? "";
+                        openCountByAgent.TryGetValue(id, out var openCount);
+                        waitingCountByAgent.TryGetValue(id, out var waitingCount);
+
+                        return new
+                        {
+                            id,
+                            name,
+                            openCount,
+                            waitingCount,
+                            isMe = ctx.userId == id
+                        };
                     })
                     .Where(a => a.id > 0)
                     .ToList();
@@ -104,11 +150,6 @@ namespace WhatsappClient.Controllers
             }
         }
 
-        // =========================
-        // LISTA PANEL IZQ
-        // Solo cambio: usa api/general/conversation/panel
-        // y agrega assignedUserId/assignedUserName
-        // =========================
         [HttpGet]
         public async Task<IActionResult> GetAllConversations()
         {
@@ -116,6 +157,8 @@ namespace WhatsappClient.Controllers
             {
                 var (http, ok, reason) = CreateApiClient();
                 if (!ok) return Ok(new { conversations = Array.Empty<object>(), error = reason });
+
+                var ctx = GetCurrentUserContext();
 
                 string convRaw;
                 HttpResponseMessage resPanel = await http.GetAsync("api/general/conversation/panel");
@@ -125,7 +168,6 @@ namespace WhatsappClient.Controllers
 
                 if (!usedPanel)
                 {
-                    // fallback al endpoint viejo por si el panel no existe en ese ambiente
                     var resConv = await http.GetAsync("api/general/conversation");
                     convRaw = await resConv.Content.ReadAsStringAsync();
 
@@ -133,7 +175,6 @@ namespace WhatsappClient.Controllers
                         return Ok(new { conversations = Array.Empty<object>(), error = "No se pudo obtener conversaciones" });
                 }
 
-                // contactos -> para teléfono y nombre
                 var phoneByContact = new Dictionary<int, string?>();
                 var nameByContact = new Dictionary<int, string?>();
 
@@ -146,18 +187,14 @@ namespace WhatsappClient.Controllers
                         var id = GetIntFlex(c, "id", "Id") ?? 0;
                         if (id <= 0) continue;
 
-                        var phone =
-                            GetStringFlex(c, "phone_number", "phoneNumber", "PhoneNumber", "phone", "Phone", "telefono", "Telefono");
-
-                        var name =
-                            GetStringFlex(c, "name", "Name", "nombre", "Nombre", "fullName", "FullName");
+                        var phone = GetStringFlex(c, "phone_number", "phoneNumber", "PhoneNumber", "phone", "Phone", "telefono", "Telefono");
+                        var name = GetStringFlex(c, "name", "Name", "nombre", "Nombre", "fullName", "FullName");
 
                         phoneByContact[id] = phone;
                         nameByContact[id] = name;
                     }
                 }
 
-                // agentes -> para assignedUserName
                 var agentNameById = new Dictionary<int, string>();
                 var resAgents = await http.GetAsync("api/seguridad/user/by-perfil-id/1");
                 if (resAgents.IsSuccessStatusCode)
@@ -180,15 +217,16 @@ namespace WhatsappClient.Controllers
                     {
                         id = GetIntFlex(e, "id", "Id") ?? 0,
                         contactId = GetIntFlex(e, "contact_id", "ContactId", "contactId") ?? 0,
-                        status = GetStringFlex(e, "status", "Status") ?? "open",
+                        status = NormalizeStatus(GetStringFlex(e, "status", "Status") ?? "open"),
                         startedAt = GetDateFlex(e, "started_at", "StartedAt", "startedAt"),
                         lastActivityAt = GetDateFlex(e, "last_activity_at", "LastActivityAt", "lastActivityAt"),
                         agentRequestedAt = GetDateFlex(e, "agent_requested_at", "AgentRequestedAt", "agentRequestedAt"),
-                        assignedUserId = GetIntFlex(e, "assigned_user_id", "AssignedUserId", "assignedUserId")
+                        assignedUserId = GetIntFlex(e, "assigned_user_id", "AssignedUserId", "assignedUserId"),
+                        isOnHold = GetBoolFlex(e, "is_on_hold", "IsOnHold", "isOnHold") ?? false,
+                        onHoldReason = GetStringFlex(e, "on_hold_reason", "OnHoldReason", "onHoldReason")
                     })
                     .ToList();
 
-                // si no fue panel, mantenemos tu filtro viejo: solo las que pidieron agente
                 if (!usedPanel)
                     convsRaw = convsRaw.Where(x => x.agentRequestedAt != null).ToList();
 
@@ -202,6 +240,12 @@ namespace WhatsappClient.Controllers
                         if (x.assignedUserId.HasValue && x.assignedUserId.Value > 0 && agentNameById.TryGetValue(x.assignedUserId.Value, out var an))
                             assignedName = an;
 
+                        var badge = GetUiBadge(x.status, x.assignedUserId, x.isOnHold);
+                        var isMine = x.assignedUserId.HasValue && x.assignedUserId.Value == ctx.userId;
+
+                        var canWrite = CanWrite(ctx, x.status, x.assignedUserId, x.isOnHold);
+                        var canTake = CanTake(ctx, x.status, x.assignedUserId);
+
                         return new
                         {
                             id = x.id,
@@ -213,13 +257,21 @@ namespace WhatsappClient.Controllers
                             lastActivityAt = x.lastActivityAt,
                             agentRequestedAt = x.agentRequestedAt,
                             assignedUserId = x.assignedUserId,
-                            assignedUserName = assignedName
+                            assignedUserName = assignedName,
+                            isOnHold = x.isOnHold,
+                            onHoldReason = x.onHoldReason,
+
+                            uiBadge = badge,               // "assigned" | "unassigned" | "waiting" | "closed"
+                            isMine,
+                            canWrite,
+                            canTake,
+                            isLockedForAgents = (x.assignedUserId.HasValue && x.assignedUserId.Value > 0)
                         };
                     })
                     .OrderByDescending(x => x.lastActivityAt ?? x.startedAt)
                     .ToList();
 
-                return Ok(new { conversations = convs });
+                return Ok(new { conversations = convs, me = new { ctx.userId, ctx.profileId, ctx.isAdmin, ctx.isAgent } });
             }
             catch (Exception ex)
             {
@@ -227,9 +279,57 @@ namespace WhatsappClient.Controllers
             }
         }
 
-        // =========================
-        // CONVERSACIONES por teléfono (igual que tu viejo)
-        // =========================
+        [HttpGet]
+        public async Task<IActionResult> GetConversationMeta(int conversationId)
+        {
+            try
+            {
+                if (conversationId <= 0)
+                    return Ok(new { ok = false, error = "conversationId inválido" });
+
+                var (http, ok, reason) = CreateApiClient();
+                if (!ok) return Ok(new { ok = false, error = reason });
+
+                var ctx = GetCurrentUserContext();
+
+                var meta = await LoadConversationMetaAsync(http, conversationId);
+                if (meta == null)
+                    return Ok(new { ok = false, error = "No se encontró la conversación" });
+
+                return Ok(new
+                {
+                    ok = true,
+                    conversation = new
+                    {
+                        id = meta.Id,
+                        status = meta.Status,
+                        contactId = meta.ContactId,
+                        startedAt = meta.StartedAt,
+                        lastActivityAt = meta.LastActivityAt,
+                        assignedUserId = meta.AssignedUserId,
+                        assignedUserName = meta.AssignedUserName,
+                        contactName = meta.ContactName,
+                        contactPhone = meta.ContactPhone,
+                        isOnHold = meta.IsOnHold,
+                        onHoldReason = meta.OnHoldReason,
+                        uiBadge = GetUiBadge(meta.Status, meta.AssignedUserId, meta.IsOnHold)
+                    },
+                    permissions = new
+                    {
+                        canWrite = CanWrite(ctx, meta.Status, meta.AssignedUserId, meta.IsOnHold),
+                        canTake = CanTake(ctx, meta.Status, meta.AssignedUserId),
+                        canAssign = ctx.isAdmin,
+                        isMine = meta.AssignedUserId.HasValue && meta.AssignedUserId.Value == ctx.userId
+                    },
+                    me = new { ctx.userId, ctx.profileId, ctx.isAdmin, ctx.isAgent }
+                });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new { ok = false, error = ex.Message });
+            }
+        }
+
         [HttpGet]
         public async Task<IActionResult> GetContactConversations(string phone)
         {
@@ -271,12 +371,14 @@ namespace WhatsappClient.Controllers
                     {
                         id = GetIntFlex(e, "id", "Id") ?? 0,
                         contactId = GetIntFlex(e, "contact_id", "ContactId", "contactId") ?? 0,
-                        status = GetStringFlex(e, "status", "Status") ?? "open",
+                        status = NormalizeStatus(GetStringFlex(e, "status", "Status") ?? "open"),
                         startedAt = GetDateFlex(e, "started_at", "StartedAt", "startedAt"),
                         lastActivityAt = GetDateFlex(e, "last_activity_at", "LastActivityAt", "lastActivityAt"),
                         totalMessages = GetIntFlex(e, "total_messages", "TotalMessages") ?? 0,
                         greetingSent = GetBoolFlex(e, "greeting_sent", "Greeting_Sent", "GreetingSent") ?? false,
-                        agentRequestedAt = GetDateFlex(e, "agent_requested_at", "AgentRequestedAt", "agentRequestedAt")
+                        agentRequestedAt = GetDateFlex(e, "agent_requested_at", "AgentRequestedAt", "agentRequestedAt"),
+                        isOnHold = GetBoolFlex(e, "is_on_hold", "IsOnHold", "isOnHold") ?? false,
+                        onHoldReason = GetStringFlex(e, "on_hold_reason", "OnHoldReason", "onHoldReason")
                     })
                     .Where(x => x.agentRequestedAt != null)
                     .OrderByDescending(x => x.lastActivityAt ?? x.startedAt)
@@ -290,9 +392,6 @@ namespace WhatsappClient.Controllers
             }
         }
 
-        // =========================
-        // MENSAJES por conversación (igual que tu viejo)
-        // =========================
         [HttpGet]
         public async Task<IActionResult> GetConversationMessages(int conversationId)
         {
@@ -374,9 +473,183 @@ namespace WhatsappClient.Controllers
             }
         }
 
-        // =========================
-        // Enviar mensaje texto (igual que tu viejo)
-        // =========================
+        [HttpPost]
+        public async Task<IActionResult> TakeConversation([FromBody] JsonElement body)
+        {
+            try
+            {
+                var conversationId = GetIntFlex(body, "conversationId", "ConversationId") ?? 0;
+                if (conversationId <= 0) return Ok(new { ok = false, error = "conversationId inválido" });
+
+                var ctx = GetCurrentUserContext();
+                if (ctx.userId <= 0) return Ok(new { ok = false, error = "Usuario inválido" });
+
+                var (http, ok, reason) = CreateApiClient();
+                if (!ok) return Ok(new { ok = false, error = reason });
+
+                var meta = await LoadConversationMetaAsync(http, conversationId);
+                if (meta == null) return Ok(new { ok = false, error = "No se encontró la conversación" });
+
+                if (meta.Status == "closed")
+                    return Ok(new { ok = false, error = "La conversación está cerrada." });
+
+                if (!CanTake(ctx, meta.Status, meta.AssignedUserId))
+                    return Ok(new { ok = false, error = "No tienes permisos para tomar esta conversación." });
+
+                if (meta.AssignedUserId.HasValue && meta.AssignedUserId.Value > 0 && meta.AssignedUserId.Value != ctx.userId && !ctx.isAdmin)
+                    return Ok(new { ok = false, error = "Esta conversación ya está tomada por otro agente." });
+
+                if (!(meta.AssignedUserId.HasValue && meta.AssignedUserId.Value == ctx.userId))
+                {
+                    var assignedOk = await AssignApiAsync(http, conversationId, ctx.userId);
+                    if (!assignedOk) return Ok(new { ok = false, error = "No se pudo asignar la conversación." });
+                }
+
+                // Al tomarla, si estaba en espera, la quitamos (Opcional según tu flujo, pero recomendable)
+                if (meta.IsOnHold)
+                {
+                    await ResumeApiAsync(http, conversationId);
+                }
+
+                return Ok(new { ok = true });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new { ok = false, error = ex.Message });
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> HoldConversation([FromBody] HoldConversationDto req)
+        {
+            try
+            {
+                if (req == null || req.ConversationId <= 0)
+                    return Ok(new { ok = false, error = "payload inválido" });
+
+                if (string.IsNullOrWhiteSpace(req.Reason))
+                    return Ok(new { ok = false, error = "reason requerido" });
+
+                var ctx = GetCurrentUserContext();
+                if (ctx.userId <= 0) return Ok(new { ok = false, error = "Usuario inválido" });
+
+                var (http, ok, reason) = CreateApiClient();
+                if (!ok) return Ok(new { ok = false, error = reason });
+
+                var meta = await LoadConversationMetaAsync(http, req.ConversationId);
+                if (meta == null) return Ok(new { ok = false, error = "No se encontró la conversación" });
+
+                if (meta.Status == "closed")
+                    return Ok(new { ok = false, error = "La conversación está cerrada." });
+
+                if (!ctx.isAdmin)
+                {
+                    if (ctx.profileId != PROFILE_AGENT)
+                        return Ok(new { ok = false, error = "No tienes permisos para poner en espera." });
+
+                    if (!meta.AssignedUserId.HasValue || meta.AssignedUserId.Value <= 0)
+                    {
+                        var assignedOk = await AssignApiAsync(http, req.ConversationId, ctx.userId);
+                        if (!assignedOk) return Ok(new { ok = false, error = "No se pudo asignar la conversación." });
+                        meta.AssignedUserId = ctx.userId;
+                    }
+                    else if (meta.AssignedUserId.Value != ctx.userId)
+                    {
+                        return Ok(new { ok = false, error = "Esta conversación está tomada por otro agente." });
+                    }
+                }
+
+                // Usar el nuevo endpoint de la API Central
+                var payload = JsonSerializer.Serialize(new { reason = req.Reason });
+                var resp = await http.PostAsync($"api/general/conversation/{req.ConversationId}/hold",
+                           new StringContent(payload, Encoding.UTF8, "application/json"));
+
+                if (!resp.IsSuccessStatusCode)
+                    return Ok(new { ok = false, error = "No se pudo poner en espera." });
+
+                // Si deseas soltarla automáticamente al ponerla en espera para que otro la tome (Comenta si no es necesario)
+                // await ReleaseApiAsync(http, req.ConversationId);
+
+                return Ok(new { ok = true });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new { ok = false, error = ex.Message });
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> ResumeConversation([FromBody] JsonElement body)
+        {
+            try
+            {
+                var conversationId = GetIntFlex(body, "conversationId", "ConversationId") ?? 0;
+                if (conversationId <= 0) return Ok(new { ok = false, error = "conversationId inválido" });
+
+                var ctx = GetCurrentUserContext();
+                if (ctx.userId <= 0) return Ok(new { ok = false, error = "Usuario inválido" });
+
+                var (http, ok, reason) = CreateApiClient();
+                if (!ok) return Ok(new { ok = false, error = reason });
+
+                var meta = await LoadConversationMetaAsync(http, conversationId);
+                if (meta == null) return Ok(new { ok = false, error = "No se encontró la conversación" });
+
+                if (!ctx.isAdmin && meta.AssignedUserId.HasValue && meta.AssignedUserId.Value != ctx.userId)
+                    return Ok(new { ok = false, error = "Esta conversación pertenece a otro agente." });
+
+                var resOk = await ResumeApiAsync(http, conversationId);
+                if (!resOk) return Ok(new { ok = false, error = "No se pudo reanudar la conversación." });
+
+                return Ok(new { ok = true });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new { ok = false, error = ex.Message });
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> TransferConversation([FromBody] AssignConversationDto req)
+        {
+            try
+            {
+                if (req == null || req.ConversationId <= 0 || req.ToUserId <= 0)
+                    return Ok(new { ok = false, error = "payload inválido" });
+
+                var ctx = GetCurrentUserContext();
+                if (ctx.userId <= 0) return Ok(new { ok = false, error = "Usuario inválido" });
+
+                var (http, ok, reason) = CreateApiClient();
+                if (!ok) return Ok(new { ok = false, error = reason });
+
+                var meta = await LoadConversationMetaAsync(http, req.ConversationId);
+                if (meta == null) return Ok(new { ok = false, error = "No se encontró la conversación" });
+
+                if (meta.Status == "closed")
+                    return Ok(new { ok = false, error = "La conversación está cerrada." });
+
+                if (!ctx.isAdmin)
+                {
+                    if (ctx.profileId != PROFILE_AGENT)
+                        return Ok(new { ok = false, error = "No tienes permisos para transferir." });
+
+                    if (!meta.AssignedUserId.HasValue || meta.AssignedUserId.Value != ctx.userId)
+                        return Ok(new { ok = false, error = "Solo el agente asignado puede transferir esta conversación." });
+                }
+
+                // Transferir usando el endpoint central
+                var assignedOk2 = await AssignApiAsync(http, req.ConversationId, req.ToUserId);
+                if (!assignedOk2) return Ok(new { ok = false, error = "No se pudo transferir la conversación." });
+
+                return Ok(new { ok = true });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new { ok = false, error = ex.Message });
+            }
+        }
+
         [HttpPost]
         public async Task<IActionResult> SendMessage([FromBody] JsonElement body)
         {
@@ -393,30 +666,34 @@ namespace WhatsappClient.Controllers
                 if (string.IsNullOrWhiteSpace(message))
                     return Ok(new { success = false, error = "message requerido" });
 
+                var ctx = GetCurrentUserContext();
+
                 var (http, ok, reason) = CreateApiClient();
                 if (!ok) return Ok(new { success = false, error = reason });
 
-                string? status = null;
-                if (conversationId > 0)
+                var meta = await LoadConversationMetaAsync(http, conversationId);
+                if (meta == null)
+                    return Ok(new { success = false, error = "No se encontró la conversación." });
+
+                if (meta.Status != "open")
+                    return Ok(new { success = false, error = "La conversación no está abierta. No se puede enviar." });
+
+                if (!ctx.isAdmin)
                 {
-                    var resConv = await http.GetAsync("api/general/conversation");
-                    if (resConv.IsSuccessStatusCode)
+                    if (ctx.profileId != PROFILE_AGENT)
+                        return Ok(new { success = false, error = "No autorizado." });
+
+                    if (!meta.AssignedUserId.HasValue || meta.AssignedUserId.Value <= 0)
                     {
-                        using var jd = JsonDocument.Parse(await resConv.Content.ReadAsStringAsync());
-                        foreach (var el in ExtraerItems(jd.RootElement))
-                        {
-                            var id = GetIntFlex(el, "id", "Id") ?? 0;
-                            if (id == conversationId)
-                            {
-                                status = GetStringFlex(el, "status", "Status");
-                                break;
-                            }
-                        }
+                        var assignedOk = await AssignApiAsync(http, conversationId, ctx.userId);
+                        if (!assignedOk) return Ok(new { success = false, error = "No se pudo asignar la conversación." });
+                        meta.AssignedUserId = ctx.userId;
+                    }
+                    else if (meta.AssignedUserId.Value != ctx.userId)
+                    {
+                        return Ok(new { success = false, error = "Esta conversación ya está tomada por otro agente." });
                     }
                 }
-
-                if (!string.Equals(status, "open", StringComparison.OrdinalIgnoreCase))
-                    return Ok(new { success = false, error = "La conversación está cerrada. No se puede enviar." });
 
                 if (string.IsNullOrWhiteSpace(contactPhone) && contactId > 0)
                 {
@@ -460,9 +737,6 @@ namespace WhatsappClient.Controllers
             }
         }
 
-        // =========================
-        // Enviar AUDIO (igual que tu viejo)
-        // =========================
         [HttpPost]
         [Consumes("multipart/form-data")]
         [Route("~/Chat/SendAudio")]
@@ -481,34 +755,38 @@ namespace WhatsappClient.Controllers
                 if (conversationId <= 0)
                     return Ok(new { success = false, error = "conversationId inválido" });
 
+                var ctx = GetCurrentUserContext();
+
                 var (http, ok, reason) = CreateApiClient();
                 if (!ok) return Ok(new { success = false, error = reason });
 
-                string? status = null;
-                int? convContactId = null;
+                var meta = await LoadConversationMetaAsync(http, conversationId);
+                if (meta == null)
+                    return Ok(new { success = false, error = "No se encontró la conversación." });
 
-                var resConv = await http.GetAsync("api/general/conversation");
-                if (resConv.IsSuccessStatusCode)
+                if (meta.Status != "open")
+                    return Ok(new { success = false, error = "La conversación no está abierta. No se puede enviar audio." });
+
+                if (!ctx.isAdmin)
                 {
-                    using var jd = JsonDocument.Parse(await resConv.Content.ReadAsStringAsync());
-                    foreach (var el in ExtraerItems(jd.RootElement))
+                    if (ctx.profileId != PROFILE_AGENT)
+                        return Ok(new { success = false, error = "No autorizado." });
+
+                    if (!meta.AssignedUserId.HasValue || meta.AssignedUserId.Value <= 0)
                     {
-                        var id = GetIntFlex(el, "id", "Id") ?? 0;
-                        if (id == conversationId)
-                        {
-                            status = GetStringFlex(el, "status", "Status") ?? "open";
-                            convContactId = GetIntFlex(el, "contact_id", "ContactId", "contactId");
-                            break;
-                        }
+                        var assignedOk = await AssignApiAsync(http, conversationId, ctx.userId);
+                        if (!assignedOk) return Ok(new { success = false, error = "No se pudo asignar la conversación." });
+                        meta.AssignedUserId = ctx.userId;
+                    }
+                    else if (meta.AssignedUserId.Value != ctx.userId)
+                    {
+                        return Ok(new { success = false, error = "Esta conversación ya está tomada por otro agente." });
                     }
                 }
 
-                if (!string.Equals(status, "open", StringComparison.OrdinalIgnoreCase))
-                    return Ok(new { success = false, error = "La conversación está cerrada. No se puede enviar audio." });
-
                 var finalContactId = (contactId.HasValue && contactId.Value > 0)
                     ? contactId.Value
-                    : (convContactId ?? 0);
+                    : (meta.ContactId ?? 0);
 
                 if (finalContactId <= 0)
                     return Ok(new { success = false, error = "No se pudo resolver contactId para enviar el audio." });
@@ -608,9 +886,6 @@ namespace WhatsappClient.Controllers
             }
         }
 
-        // =========================
-        // Descargar attachment (igual que tu viejo)
-        // =========================
         [HttpGet]
         public async Task<IActionResult> Attachment(int id)
         {
@@ -642,107 +917,6 @@ namespace WhatsappClient.Controllers
             }
         }
 
-        // =========================
-        // Cerrar conversación (igual que tu viejo)
-        // =========================
-        [HttpPost]
-        public async Task<IActionResult> UpdateConversationStatus([FromBody] UpdateConversationStatusDto req)
-        {
-            try
-            {
-                if (req == null || req.ConversationId <= 0 || string.IsNullOrWhiteSpace(req.Status))
-                    return Ok(new { success = false, error = "payload inválido" });
-
-                if (req.Status.Equals("open", StringComparison.OrdinalIgnoreCase))
-                    return Ok(new { success = false, error = "No se permite reabrir conversaciones cerradas." });
-
-                var (http, ok, reason) = CreateApiClient();
-                if (!ok) return Ok(new { success = false, error = reason });
-
-                int? contactId = null;
-                DateTime? startedAt = null;
-                string? contactPhone = null;
-                string? currentStatus = null;
-
-                var resConv = await http.GetAsync("api/general/conversation");
-                if (resConv.IsSuccessStatusCode)
-                {
-                    var txt = await resConv.Content.ReadAsStringAsync();
-                    using var jd = JsonDocument.Parse(txt);
-                    foreach (var el in ExtraerItems(jd.RootElement))
-                    {
-                        var id = GetIntFlex(el, "id", "Id") ?? 0;
-                        if (id == req.ConversationId)
-                        {
-                            contactId = GetIntFlex(el, "contact_id", "ContactId", "contactId");
-                            startedAt = GetDateFlex(el, "started_at", "StartedAt", "startedAt");
-                            currentStatus = GetStringFlex(el, "status", "Status") ?? "open";
-                            break;
-                        }
-                    }
-                }
-
-                if ((currentStatus ?? "open").Equals("closed", StringComparison.OrdinalIgnoreCase))
-                    return Ok(new { success = false, error = "La conversación ya está cerrada." });
-
-                if (contactId.HasValue && contactId.Value > 0)
-                {
-                    var resContact = await http.GetAsync("api/general/contact");
-                    if (resContact.IsSuccessStatusCode)
-                    {
-                        var txt = await resContact.Content.ReadAsStringAsync();
-                        using var jd = JsonDocument.Parse(txt);
-                        foreach (var el in ExtraerItems(jd.RootElement))
-                        {
-                            var id = GetIntFlex(el, "id", "Id") ?? 0;
-                            if (id == contactId.Value)
-                            {
-                                contactPhone = GetStringFlex(el, "phone_number", "phoneNumber", "PhoneNumber", "phone", "Phone");
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                var payload = new
-                {
-                    Id = req.ConversationId,
-                    Contact_Id = contactId ?? req.ContactId,
-                    Started_At = startedAt ?? req.StartedAt,
-                    Status = "closed",
-                    Last_Activity_At = DateTime.UtcNow
-                };
-                await PostApiSnakeAsync(http, "api/general/conversation/upsert", payload);
-
-                if (!string.IsNullOrWhiteSpace(contactPhone))
-                {
-                    await SendTextViaApiAsync(http, new
-                    {
-                        Contact_Id = contactId,
-                        Conversation_Id = req.ConversationId,
-                        To_Phone = contactPhone,
-                        Text = "Tu ticket ha sido cerrado. Si necesitas más ayuda, por favor crea un nuevo ticket respondiendo a este chat.",
-                        Create_If_Not_Exists = false,
-                        Log = true
-                    });
-                }
-
-                if (_autoClose.TryRemove(req.ConversationId, out var cts))
-                {
-                    try { cts.Cancel(); cts.Dispose(); } catch { }
-                }
-
-                return Ok(new { success = true });
-            }
-            catch (Exception ex)
-            {
-                return Ok(new { success = false, error = ex.Message });
-            }
-        }
-
-        // =========================
-        // Asignar / liberar (por si lo ocupás)
-        // =========================
         [HttpPost]
         public async Task<IActionResult> AssignConversation([FromBody] JsonElement body)
         {
@@ -754,16 +928,16 @@ namespace WhatsappClient.Controllers
                 if (conversationId <= 0) return Ok(new { ok = false, error = "conversationId inválido" });
                 if (toUserId <= 0) return Ok(new { ok = false, error = "toUserId inválido" });
 
-                var (http, ok, reason) = CreateApiClient();
-                if (!ok) return Ok(new { ok = false, error = reason });
+                var ctx = GetCurrentUserContext();
+                if (!ctx.isAdmin)
+                    return Ok(new { ok = false, error = "No autorizado." });
 
-                var payload = JsonSerializer.Serialize(new { toUserId });
-                var resp = await http.PostAsync($"api/general/conversation/{conversationId}/assign",
-                    new StringContent(payload, Encoding.UTF8, "application/json"));
+                var (http, ok, reasonClient) = CreateApiClient();
+                if (!ok) return Ok(new { ok = false, error = reasonClient });
 
-                var json = await resp.Content.ReadAsStringAsync();
-                if (!resp.IsSuccessStatusCode)
-                    return Ok(new { ok = false, error = json });
+                var okAssign = await AssignApiAsync(http, conversationId, toUserId);
+                if (!okAssign)
+                    return Ok(new { ok = false, error = "No se pudo asignar la conversación" });
 
                 return Ok(new { ok = true });
             }
@@ -781,15 +955,16 @@ namespace WhatsappClient.Controllers
                 var conversationId = GetIntFlex(body, "conversationId", "ConversationId") ?? 0;
                 if (conversationId <= 0) return Ok(new { ok = false, error = "conversationId inválido" });
 
+                var ctx = GetCurrentUserContext();
+                if (!ctx.isAdmin)
+                    return Ok(new { ok = false, error = "No autorizado." });
+
                 var (http, ok, reason) = CreateApiClient();
                 if (!ok) return Ok(new { ok = false, error = reason });
 
-                var resp = await http.PostAsync($"api/general/conversation/{conversationId}/release",
-                    new StringContent("{}", Encoding.UTF8, "application/json"));
-
-                var json = await resp.Content.ReadAsStringAsync();
-                if (!resp.IsSuccessStatusCode)
-                    return Ok(new { ok = false, error = json });
+                var okRel = await ReleaseApiAsync(http, conversationId);
+                if (!okRel)
+                    return Ok(new { ok = false, error = "No se pudo liberar la conversación" });
 
                 return Ok(new { ok = true });
             }
@@ -799,9 +974,6 @@ namespace WhatsappClient.Controllers
             }
         }
 
-        // =========================
-        // Helpers HTTP / API (igual que tu viejo, solo más tolerante con keys)
-        // =========================
         private (HttpClient http, bool ok, string reason) CreateApiClient()
         {
             var apiBase =
@@ -923,7 +1095,6 @@ namespace WhatsappClient.Controllers
                     return val.ToString();
                 }
 
-                // case-insensitive
                 foreach (var p in doc.RootElement.EnumerateObject())
                     if (string.Equals(p.Name, claimName, StringComparison.OrdinalIgnoreCase))
                         return p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.ToString();
@@ -972,6 +1143,264 @@ namespace WhatsappClient.Controllers
                 case 3: s += "="; break;
             }
             return Convert.FromBase64String(s);
+        }
+
+        private (int userId, int profileId, bool isAdmin, bool isAgent) GetCurrentUserContext()
+        {
+            var token = GetJwtToken();
+            var uid = TryGetClaimFromJwt(token, "sub")
+                   ?? TryGetClaimFromJwt(token, "user_id")
+                   ?? TryGetClaimFromJwt(token, "id")
+                   ?? TryGetClaimFromJwt(token, "nameid");
+
+            var pid = TryGetClaimFromJwt(token, "idProfile")
+                   ?? TryGetClaimFromJwt(token, "profile_id")
+                   ?? TryGetClaimFromJwt(token, "ProfileId");
+
+            int.TryParse(uid, out var userId);
+            int.TryParse(pid, out var profileId);
+
+            var role = TryGetClaimFromJwt(token, "role") ?? "";
+
+            var isAdmin =
+                profileId == PROFILE_ADMIN || profileId == PROFILE_SUPERADMIN ||
+                role.Equals("admin", StringComparison.OrdinalIgnoreCase) ||
+                role.Equals("superadmin", StringComparison.OrdinalIgnoreCase);
+
+            var isAgent = profileId == PROFILE_AGENT;
+
+            return (userId, profileId, isAdmin, isAgent);
+        }
+
+        private static bool CanWrite((int userId, int profileId, bool isAdmin, bool isAgent) ctx, string status, int? assignedUserId, bool isOnHold)
+        {
+            status = NormalizeStatus(status);
+            if (status != "open") return false;
+            // Opcional: si está en espera bloqueas la escritura. Descomenta la siguiente linea si lo deseas:
+            // if (isOnHold) return false; 
+            if (ctx.isAdmin) return true;
+            if (ctx.profileId == PROFILE_AGENT && assignedUserId.HasValue && assignedUserId.Value == ctx.userId) return true;
+            return false;
+        }
+
+        private static bool CanTake((int userId, int profileId, bool isAdmin, bool isAgent) ctx, string status, int? assignedUserId)
+        {
+            status = NormalizeStatus(status);
+            if (status == "closed") return false;
+            if (ctx.isAdmin) return true;
+            if (ctx.profileId != PROFILE_AGENT) return false;
+            if (!assignedUserId.HasValue || assignedUserId.Value <= 0) return true;
+            return assignedUserId.Value == ctx.userId;
+        }
+
+        private static string GetUiBadge(string status, int? assignedUserId, bool isOnHold)
+        {
+            status = NormalizeStatus(status);
+
+            if (status == "closed") return "closed";
+            if (isOnHold || status == "waiting") return "waiting"; // NARANJA
+            if (assignedUserId.HasValue && assignedUserId.Value > 0) return "assigned"; // ROJO
+            return "unassigned"; // VERDE
+        }
+
+        private static string NormalizeStatus(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return "open";
+            s = s.Trim().ToLowerInvariant();
+
+            if (s == "onhold" || s == "on_hold" || s == "hold") return "waiting";
+            if (s == "waiting" || s == "wait" || s == "pending") return "waiting";
+            if (s == "open" || s == "abierta" || s == "abierto") return "open";
+            if (s == "closed" || s == "cerrada" || s == "cerrado") return "closed";
+
+            return s;
+        }
+
+        private sealed class ConversationMeta
+        {
+            public int Id { get; set; }
+            public int? ContactId { get; set; }
+            public string Status { get; set; } = "open";
+            public DateTime? StartedAt { get; set; }
+            public DateTime? LastActivityAt { get; set; }
+            public int? AssignedUserId { get; set; }
+            public string? AssignedUserName { get; set; }
+            public string? ContactName { get; set; }
+            public string? ContactPhone { get; set; }
+
+            // NUEVO
+            public bool IsOnHold { get; set; }
+            public string? OnHoldReason { get; set; }
+        }
+
+        private async Task<ConversationMeta?> LoadConversationMetaAsync(HttpClient http, int conversationId)
+        {
+            JsonElement? found = null;
+            string rawPanel = "";
+
+            try
+            {
+                var resPanel = await http.GetAsync("api/general/conversation/panel");
+                if (resPanel.IsSuccessStatusCode)
+                {
+                    rawPanel = await resPanel.Content.ReadAsStringAsync();
+                    using var docP = JsonDocument.Parse(rawPanel);
+                    foreach (var c in ExtraerItems(docP.RootElement))
+                    {
+                        var id = GetIntFlex(c, "id", "Id") ?? 0;
+                        if (id == conversationId) { found = c; break; }
+                    }
+                }
+            }
+            catch { }
+
+            if (found == null)
+            {
+                try
+                {
+                    var resConv = await http.GetAsync("api/general/conversation");
+                    if (!resConv.IsSuccessStatusCode) return null;
+
+                    using var docC = JsonDocument.Parse(await resConv.Content.ReadAsStringAsync());
+                    foreach (var c in ExtraerItems(docC.RootElement))
+                    {
+                        var id = GetIntFlex(c, "id", "Id") ?? 0;
+                        if (id == conversationId) { found = c; break; }
+                    }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            if (found == null) return null;
+
+            var el = found.Value;
+
+            var meta = new ConversationMeta
+            {
+                Id = GetIntFlex(el, "id", "Id") ?? conversationId,
+                ContactId = GetIntFlex(el, "contact_id", "ContactId", "contactId"),
+                Status = NormalizeStatus(GetStringFlex(el, "status", "Status") ?? "open"),
+                StartedAt = GetDateFlex(el, "started_at", "StartedAt", "startedAt"),
+                LastActivityAt = GetDateFlex(el, "last_activity_at", "LastActivityAt", "lastActivityAt"),
+                AssignedUserId = GetIntFlex(el, "assigned_user_id", "AssignedUserId", "assignedUserId"),
+                IsOnHold = GetBoolFlex(el, "is_on_hold", "IsOnHold") ?? false,
+                OnHoldReason = GetStringFlex(el, "on_hold_reason", "OnHoldReason")
+            };
+
+            if (meta.ContactId.HasValue && meta.ContactId.Value > 0)
+            {
+                try
+                {
+                    var resContact = await http.GetAsync("api/general/contact");
+                    if (resContact.IsSuccessStatusCode)
+                    {
+                        using var doc = JsonDocument.Parse(await resContact.Content.ReadAsStringAsync());
+                        foreach (var c in ExtraerItems(doc.RootElement))
+                        {
+                            var id = GetIntFlex(c, "id", "Id") ?? 0;
+                            if (id == meta.ContactId.Value)
+                            {
+                                meta.ContactName = GetStringFlex(c, "name", "Name", "nombre", "Nombre", "fullName", "FullName");
+                                meta.ContactPhone = GetStringFlex(c, "phone_number", "phoneNumber", "PhoneNumber", "phone", "Phone", "telefono", "Telefono");
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (meta.AssignedUserId.HasValue && meta.AssignedUserId.Value > 0)
+            {
+                try
+                {
+                    var resAgents = await http.GetAsync("api/seguridad/user/by-perfil-id/1");
+                    if (resAgents.IsSuccessStatusCode)
+                    {
+                        using var doc = JsonDocument.Parse(await resAgents.Content.ReadAsStringAsync());
+                        foreach (var a in ExtraerItems(doc.RootElement))
+                        {
+                            var id = GetIntFlex(a, "id", "Id") ?? 0;
+                            if (id == meta.AssignedUserId.Value)
+                            {
+                                meta.AssignedUserName = GetStringFlex(a, "name", "Name", "fullName", "FullName", "username", "Username");
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (meta.StartedAt == null)
+            {
+                try
+                {
+                    var resConv = await http.GetAsync("api/general/conversation");
+                    if (resConv.IsSuccessStatusCode)
+                    {
+                        using var docC = JsonDocument.Parse(await resConv.Content.ReadAsStringAsync());
+                        foreach (var c in ExtraerItems(docC.RootElement))
+                        {
+                            var id = GetIntFlex(c, "id", "Id") ?? 0;
+                            if (id == conversationId)
+                            {
+                                meta.StartedAt = GetDateFlex(c, "started_at", "StartedAt", "startedAt") ?? meta.StartedAt;
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            return meta;
+        }
+
+        private static async Task<bool> AssignApiAsync(HttpClient http, int conversationId, int toUserId)
+        {
+            try
+            {
+                var payload = JsonSerializer.Serialize(new { toUserId });
+                var resp = await http.PostAsync($"api/general/conversation/{conversationId}/assign",
+                    new StringContent(payload, Encoding.UTF8, "application/json"));
+                return resp.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static async Task<bool> ReleaseApiAsync(HttpClient http, int conversationId)
+        {
+            try
+            {
+                var resp = await http.PostAsync($"api/general/conversation/{conversationId}/release",
+                    new StringContent("{}", Encoding.UTF8, "application/json"));
+                return resp.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static async Task<bool> ResumeApiAsync(HttpClient http, int conversationId)
+        {
+            try
+            {
+                var resp = await http.PostAsync($"api/general/conversation/{conversationId}/resume",
+                    new StringContent("{}", Encoding.UTF8, "application/json"));
+                return resp.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static async Task<(bool success, string? error, int? conversationId, bool justCreated)> SendTextViaApiAsync(HttpClient http, object payload)
@@ -1035,12 +1464,6 @@ namespace WhatsappClient.Controllers
             }
         }
 
-        private static async Task PostApiSnakeAsync(HttpClient http, string relativeEndpoint, object body)
-        {
-            var json = JsonSerializer.Serialize(body, new JsonSerializerOptions { PropertyNamingPolicy = null });
-            await http.PostAsync(relativeEndpoint, new StringContent(json, Encoding.UTF8, "application/json"));
-        }
-
         private static bool ExtractApiOk(string body)
         {
             try
@@ -1090,7 +1513,6 @@ namespace WhatsappClient.Controllers
             return $"{name}.ogg";
         }
 
-        // ========= JSON utils (igual que tu viejo) =========
         private static IEnumerable<JsonElement> ExtraerItems(JsonElement root)
         {
             if (TryGetCaseInsensitive(root, "data", out var data))
@@ -1198,4 +1620,4 @@ namespace WhatsappClient.Controllers
             public long? SizeBytes { get; set; }
         }
     }
-} 
+}
