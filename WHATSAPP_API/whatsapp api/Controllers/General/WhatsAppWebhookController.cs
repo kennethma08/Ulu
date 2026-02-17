@@ -347,16 +347,27 @@ namespace Whatsapp_API.Controllers.General
                                 if (convUpd.Exitoso && convUpd.Data != null)
                                 {
                                     convUpd.Data.LastActivityAt = DateTime.UtcNow;
+
                                     if (!string.Equals(convUpd.Data.Status, "closed", StringComparison.OrdinalIgnoreCase))
                                     {
                                         convUpd.Data.Status = "open";
+
+                                        if (convUpd.Data.IsOnHold)
+                                        {
+                                            convUpd.Data.IsOnHold = false;
+                                            convUpd.Data.OnHoldReason = null;
+                                            convUpd.Data.OnHoldAt = null;
+                                            convUpd.Data.OnHoldByUserId = null;
+                                        }
                                     }
                                     else
                                     {
                                         convUpd.Data.EndedAt ??= DateTime.UtcNow;
                                     }
+
                                     _conversationBus.Update(convUpd.Data);
                                 }
+
 
                                 ScheduleAutoClose(convId, phone, tplCierre, langsToTry);
 

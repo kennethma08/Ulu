@@ -5,9 +5,9 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Whatsapp_API.Data;
-using Whatsapp_API.Models.Helpers;
-using Whatsapp_API.Models.Entities.Messaging;
 using Whatsapp_API.Infrastructure.MultiTenancy;
+using Whatsapp_API.Models.Entities.Messaging;
+using Whatsapp_API.Models.Helpers;
 
 namespace Whatsapp_API.Business.General
 {
@@ -26,28 +26,59 @@ namespace Whatsapp_API.Business.General
 
         private int EmpresaIdActual()
         {
-            var items = _http?.HttpContext?.Items;
-            if (items != null && items.TryGetValue("EMPRESA_ID", out var vObj))
+            try
             {
-                if (vObj is int vi && vi > 0) return vi;
-                if (vObj is string vs && int.TryParse(vs, out var vis) && vis > 0) return vis;
+                var items = _http?.HttpContext?.Items;
+
+                // Items: aceptar ambos (tu webhook usa COMPANY_ID)
+                if (items != null)
+                {
+                    if (items.TryGetValue("COMPANY_ID", out var vCompany))
+                    {
+                        if (vCompany is int vi && vi > 0) return vi;
+                        if (vCompany is string vs && int.TryParse(vs, out var vis) && vis > 0) return vis;
+                    }
+
+                    if (items.TryGetValue("EMPRESA_ID", out var vEmp))
+                    {
+                        if (vEmp is int vi2 && vi2 > 0) return vi2;
+                        if (vEmp is string vs2 && int.TryParse(vs2, out var vis2) && vis2 > 0) return vis2;
+                    }
+                }
+
+                // Tenant
+                if (_tenant?.CompanyId > 0) return _tenant.CompanyId;
+
+                var http = _http?.HttpContext;
+
+                // Claims
+                string s =
+                    http?.User?.FindFirst("empresa_id")?.Value ??
+                    http?.User?.FindFirst("company_id")?.Value ??
+                    http?.User?.FindFirst("empresaId")?.Value ??
+                    http?.User?.FindFirst("companyId")?.Value ??
+                    "";
+
+                // Headers
+                if (string.IsNullOrWhiteSpace(s))
+                    s = http?.Request?.Headers["X-Company-Id"].FirstOrDefault()
+                      ?? http?.Request?.Headers["X-Company"].FirstOrDefault()
+                      ?? http?.Request?.Headers["X-Empresa-Id"].FirstOrDefault()
+                      ?? http?.Request?.Headers["X-Empresa"].FirstOrDefault();
+
+                // Query
+                if (string.IsNullOrWhiteSpace(s))
+                    s = http?.Request?.Query["company_id"].FirstOrDefault()
+                      ?? http?.Request?.Query["CompanyId"].FirstOrDefault()
+                      ?? http?.Request?.Query["empresa_id"].FirstOrDefault()
+                      ?? http?.Request?.Query["EmpresaId"].FirstOrDefault();
+
+                return int.TryParse(s, out var id) ? id : 0;
             }
-
-            if (_tenant?.CompanyId > 0) return _tenant.CompanyId;
-
-            var http = _http?.HttpContext;
-            string s = http?.User?.FindFirst("empresa_id")?.Value
-                    ?? http?.User?.FindFirst("EmpresaId")?.Value;
-
-            if (string.IsNullOrWhiteSpace(s))
-                s = http?.Request?.Headers["X-Empresa-Id"].FirstOrDefault()
-                  ?? http?.Request?.Headers["X-Empresa"].FirstOrDefault();
-
-            if (string.IsNullOrWhiteSpace(s))
-                s = http?.Request?.Query["empresa_id"].FirstOrDefault()
-                  ?? http?.Request?.Query["EmpresaId"].FirstOrDefault();
-
-            return int.TryParse(s, out var id) ? id : 0;
+            catch
+            {
+                return 0;
+            }
         }
 
         private (int userId, int profileId, bool isAdmin) GetMe()
@@ -75,10 +106,11 @@ namespace Whatsapp_API.Business.General
                 user?.FindFirst(ClaimTypes.Role)?.Value ??
                 "";
 
-            // por tu contexto previo: 1 agente, 2 admin, 3 superadmin
-            bool isAdmin = profileId == 2 || profileId == 3 ||
-                           role.Equals("admin", StringComparison.OrdinalIgnoreCase) ||
-                           role.Equals("superadmin", StringComparison.OrdinalIgnoreCase);
+            // si no viene profileId en el token, igual se puede decidir por role
+            bool isAdmin =
+                profileId == 2 || profileId == 3 ||
+                role.Equals("admin", StringComparison.OrdinalIgnoreCase) ||
+                role.Equals("superadmin", StringComparison.OrdinalIgnoreCase);
 
             return (userId, profileId, isAdmin);
         }
@@ -114,9 +146,12 @@ namespace Whatsapp_API.Business.General
             var contOk = _db.Contacts
                 .AsNoTracking()
                 .Any(x => x.Id == c.ContactId && x.CompanyId == eid);
-            if (!contOk) return new() { Exitoso = false, Mensaje = "Contacto inválido", StatusCode = 400 };
+
+            if (!contOk)
+                return new() { Exitoso = false, Mensaje = "Contacto inválido", StatusCode = 400 };
 
             c.CompanyId = eid;
+
             _db.Conversations.Add(c);
             _db.SaveChanges();
 
@@ -131,24 +166,36 @@ namespace Whatsapp_API.Business.General
             if (dbC == null)
                 return new() { Exitoso = false, Mensaje = "No encontrado", StatusCode = 404 };
 
+            // no permitir reabrir si ya está cerrada
             if (!string.IsNullOrWhiteSpace(c.Status) &&
                 string.Equals(dbC.Status ?? "", "closed", StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(c.Status, "open", StringComparison.OrdinalIgnoreCase))
                 return new() { Exitoso = false, Mensaje = "No se permite reabrir una conversación cerrada.", StatusCode = 409 };
 
-            dbC.StartedAt = c.StartedAt != default ? c.StartedAt : dbC.StartedAt;
+            // básicos
+            if (c.StartedAt != default) dbC.StartedAt = c.StartedAt;
             dbC.LastActivityAt = c.LastActivityAt ?? dbC.LastActivityAt;
             dbC.EndedAt = c.EndedAt ?? dbC.EndedAt;
             dbC.Status = string.IsNullOrWhiteSpace(c.Status) ? dbC.Status : c.Status.Trim();
+
+            // métricas
             dbC.GreetingSent = c.GreetingSent;
+            dbC.TotalMessages = c.TotalMessages;
+            dbC.AiMessages = c.AiMessages;
             dbC.FirstResponseTime = c.FirstResponseTime ?? dbC.FirstResponseTime;
             dbC.Rating = c.Rating ?? dbC.Rating;
             dbC.ClosedByUserId = c.ClosedByUserId ?? dbC.ClosedByUserId;
 
-            // mantener marca de “agente solicitado” si llega
+            // hold (tu versión anterior NO lo guardaba)
+            dbC.IsOnHold = c.IsOnHold;
+            dbC.OnHoldReason = c.OnHoldReason;
+            dbC.OnHoldAt = c.OnHoldAt;
+            dbC.OnHoldByUserId = c.OnHoldByUserId;
+
+            // agent requested
             dbC.AgentRequestedAt = c.AgentRequestedAt ?? dbC.AgentRequestedAt;
 
-            // IMPORTANTE: NO tocar Assigned* aquí para no borrar asignaciones por accidente
+            // NO tocar Assigned* aquí para no borrar asignaciones por accidente
             _db.SaveChanges();
 
             return new() { Exitoso = true, Mensaje = "Actualizado", StatusCode = 200, Data = dbC };
@@ -158,10 +205,13 @@ namespace Whatsapp_API.Business.General
         {
             var eid = EmpresaIdActual();
             var c = _db.Conversations.FirstOrDefault(x => x.Id == id && x.CompanyId == eid);
-            if (c == null) return new() { Exitoso = false, Mensaje = "No encontrado", StatusCode = 404 };
+
+            if (c == null)
+                return new() { Exitoso = false, Mensaje = "No encontrado", StatusCode = 404 };
 
             _db.Conversations.Remove(c);
             _db.SaveChanges();
+
             return new() { Exitoso = true, Mensaje = "Eliminado", StatusCode = 200 };
         }
 
@@ -224,7 +274,8 @@ namespace Whatsapp_API.Business.General
                 Status = "open",
                 GreetingSent = false,
                 TotalMessages = 0,
-                AiMessages = 0
+                AiMessages = 0,
+                IsOnHold = false
             };
 
             var r = Create(c);
@@ -247,9 +298,6 @@ namespace Whatsapp_API.Business.General
             return new() { Exitoso = true, Data = dbC, StatusCode = 200 };
         }
 
-        // NUEVO: listado para panel (solo agent_requested_at != null)
-        // - admin/superadmin: ve todas
-        // - agente: ve solo (sin asignar) o (asignadas a él)
         public BooleanoDescriptivo<List<object>> ListPanel()
         {
             var eid = EmpresaIdActual();
@@ -283,7 +331,6 @@ namespace Whatsapp_API.Business.General
             return new() { Exitoso = true, Data = data, StatusCode = 200 };
         }
 
-        // NUEVO: asignar / transferir / soltar
         public DescriptiveBoolean Assign(int conversationId, int? toUserId)
         {
             var eid = EmpresaIdActual();
@@ -297,10 +344,8 @@ namespace Whatsapp_API.Business.General
             if (!dbC.AgentRequestedAt.HasValue)
                 return new() { Exitoso = false, Mensaje = "La conversación no tiene solicitud de agente.", StatusCode = 409 };
 
-            // reglas para agentes
             if (!isAdmin)
             {
-                // si está sin asignar: solo puede tomarla para sí mismo
                 if (!dbC.AssignedUserId.HasValue)
                 {
                     if (!toUserId.HasValue || toUserId.Value != meId)
@@ -308,13 +353,11 @@ namespace Whatsapp_API.Business.General
                 }
                 else
                 {
-                    // si está asignada, debe ser mía para transferir o soltar
                     if (dbC.AssignedUserId.Value != meId)
                         return new() { Exitoso = false, Mensaje = "La conversación ya está asignada a otro agente.", StatusCode = 403 };
                 }
             }
 
-            // si se asigna a alguien, validar que exista
             if (toUserId.HasValue)
             {
                 var exists = _db.Users.AsNoTracking().Any(u => u.Id == toUserId.Value);

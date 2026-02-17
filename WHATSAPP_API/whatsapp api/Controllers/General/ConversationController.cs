@@ -9,9 +9,6 @@ using Whatsapp_API.Models.Request.General;
 
 namespace Whatsapp_API.Controllers.General
 {
-
-    // conversaciones ver, crear/editar, abrir/cerrar, y utilidades
-
     [Produces("application/json")]
     [Route("api/general/[controller]")]
     [ApiController]
@@ -23,8 +20,6 @@ namespace Whatsapp_API.Controllers.General
         public ConversationController(ConversationBus bus, EmailHelper correo)
         { _bus = bus; _correo = correo; }
 
-        // lista todas
-
         [HttpGet]
         public ActionResult Get()
         {
@@ -32,16 +27,12 @@ namespace Whatsapp_API.Controllers.General
             catch (Exception ex) { _correo.EnviarCorreoError(ex); return StatusCode(500, ex.Message); }
         }
 
-        // trae una por id
-
         [HttpGet("{id:int}")]
         public ActionResult Get(int id)
         {
             try { return _bus.Find(id).StatusCodeDescriptivo(); }
             catch (Exception ex) { _correo.EnviarCorreoError(ex, new { id }); return StatusCode(500, ex.Message); }
         }
-
-        // crea o actualiza (si viene id)
 
         [HttpPost("upsert")]
         public ActionResult Upsert([FromBody] ConversationUpsertRequest req)
@@ -56,7 +47,6 @@ namespace Whatsapp_API.Controllers.General
                     var c = new Conversation
                     {
                         ContactId = req.Contact_Id,
-                        // Agent_Id eliminado
                         StartedAt = req.Started_At ?? DateTime.UtcNow,
                         LastActivityAt = req.Last_Activity_At,
                         EndedAt = req.Ended_At,
@@ -66,7 +56,13 @@ namespace Whatsapp_API.Controllers.General
                         AiMessages = req.Ai_Messages ?? 0,
                         FirstResponseTime = req.First_Response_Time,
                         Rating = req.Rating,
-                        ClosedByUserId = null
+                        ClosedByUserId = null,
+
+                        // nuevo hold: por defecto no
+                        IsOnHold = false,
+                        OnHoldReason = null,
+                        OnHoldAt = null,
+                        OnHoldByUserId = null
                     };
                     var r = _bus.Create(c);
                     return r.StatusCodeDescriptivo();
@@ -81,10 +77,10 @@ namespace Whatsapp_API.Controllers.General
                 if (!string.IsNullOrWhiteSpace(req.Status) &&
                     (conv.Status ?? "").Trim().Equals("closed", StringComparison.OrdinalIgnoreCase) &&
                     req.Status.Trim().Equals("open", StringComparison.OrdinalIgnoreCase))
-                    return StatusCode(StatusCodes.Status409Conflict, new { exitoso = false, mensaje = "No se permite reabrir una conversación cerrada.", statusCode = 409 });
+                    return StatusCode(StatusCodes.Status409Conflict,
+                        new { exitoso = false, mensaje = "No se permite reabrir una conversación cerrada.", statusCode = 409 });
 
                 conv.ContactId = req.Contact_Id != 0 ? req.Contact_Id : conv.ContactId;
-                // conv.AgentId = req.Agent_Id ?? conv.AgentId;  // eliminado
                 conv.StartedAt = req.Started_At ?? conv.StartedAt;
                 conv.LastActivityAt = req.Last_Activity_At ?? conv.LastActivityAt;
                 conv.EndedAt = req.Ended_At ?? conv.EndedAt;
@@ -98,6 +94,12 @@ namespace Whatsapp_API.Controllers.General
                     conv.EndedAt ??= DateTime.UtcNow;
                     var uid = GetCurrentUserId();
                     if (uid.HasValue) conv.ClosedByUserId = uid.Value;
+
+                    // si cierra, limpiar hold
+                    conv.IsOnHold = false;
+                    conv.OnHoldReason = null;
+                    conv.OnHoldAt = null;
+                    conv.OnHoldByUserId = null;
                 }
 
                 conv.Status = newStatus;
@@ -113,11 +115,10 @@ namespace Whatsapp_API.Controllers.General
             catch (Exception ex)
             {
                 _correo.EnviarCorreoError(ex, req);
-                return new DescriptiveBoolean { Exitoso = false, Mensaje = "Error al crear/actualizar", StatusCode = 500 }.StatusCodeDescriptivo();
+                return new DescriptiveBoolean { Exitoso = false, Mensaje = "Error al crear/actualizar", StatusCode = 500 }
+                    .StatusCodeDescriptivo();
             }
         }
-
-        // abre una conversación reciente o crea una nueva
 
         [HttpPost("open-or-create")]
         [AllowAnonymous]
@@ -129,13 +130,25 @@ namespace Whatsapp_API.Controllers.General
 
                 var open = _bus.FindOpenByContactStrict(req.Contact_Id, freshOnly: req.Fresh_Only ?? true);
                 if (open.Exitoso && open.Data != null)
-                    return Ok(new { data = new { id = open.Data.Id, created = false, status = open.Data.Status, started_at = open.Data.StartedAt, last_activity_at = open.Data.LastActivityAt } });
+                    return Ok(new
+                    {
+                        data = new
+                        {
+                            id = open.Data.Id,
+                            created = false,
+                            status = open.Data.Status,
+                            started_at = open.Data.StartedAt,
+                            last_activity_at = open.Data.LastActivityAt,
+                            is_on_hold = open.Data.IsOnHold,
+                            on_hold_reason = open.Data.OnHoldReason,
+                            on_hold_at = open.Data.OnHoldAt
+                        }
+                    });
 
                 var now = req.Started_At ?? DateTime.UtcNow;
                 var c = new Conversation
                 {
                     ContactId = req.Contact_Id,
-                    // Agent_Id / AgentId eliminado
                     StartedAt = now,
                     LastActivityAt = now,
                     EndedAt = null,
@@ -144,12 +157,29 @@ namespace Whatsapp_API.Controllers.General
                     TotalMessages = 0,
                     AiMessages = 0,
                     FirstResponseTime = null,
-                    Rating = null
+                    Rating = null,
+
+                    IsOnHold = false,
+                    OnHoldReason = null,
+                    OnHoldAt = null,
+                    OnHoldByUserId = null
                 };
+
                 var r = _bus.Create(c);
                 if (!r.Exitoso || r.Data == null) return r.StatusCodeDescriptivo();
 
-                return Ok(new { data = new { id = r.Data.Id, created = true, status = r.Data.Status, started_at = r.Data.StartedAt, last_activity_at = r.Data.LastActivityAt } });
+                return Ok(new
+                {
+                    data = new
+                    {
+                        id = r.Data.Id,
+                        created = true,
+                        status = r.Data.Status,
+                        started_at = r.Data.StartedAt,
+                        last_activity_at = r.Data.LastActivityAt,
+                        is_on_hold = r.Data.IsOnHold
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -157,8 +187,6 @@ namespace Whatsapp_API.Controllers.General
                 return StatusCode(500, ex.Message);
             }
         }
-
-        // marca actividad o cambia estado rápido
 
         [HttpPost("{id:int}/touch")]
         [AllowAnonymous]
@@ -183,8 +211,6 @@ namespace Whatsapp_API.Controllers.General
             }
         }
 
-        // cierra una conversación *Zy guarda quién la cerró* REVISAR SI ESTA GUARDANDO
-
         [HttpPost("{id:int}/close")]
         public ActionResult Close(int id, [FromBody] ConversationCloseRequest req)
         {
@@ -200,6 +226,12 @@ namespace Whatsapp_API.Controllers.General
                     c.EndedAt = req.Ended_At ?? DateTime.UtcNow;
                     var uid = GetCurrentUserId();
                     if (uid.HasValue) c.ClosedByUserId = uid.Value;
+
+                    // cerrar limpia hold
+                    c.IsOnHold = false;
+                    c.OnHoldReason = null;
+                    c.OnHoldAt = null;
+                    c.OnHoldByUserId = null;
                 }
 
                 var r = _bus.Update(c);
@@ -212,7 +244,97 @@ namespace Whatsapp_API.Controllers.General
             }
         }
 
-        // elimina por id
+        // NUEVO: poner en espera
+        [HttpPost("{id:int}/hold")]
+        public ActionResult Hold(int id, [FromBody] ConversationHoldRequest req)
+        {
+            try
+            {
+                var found = _bus.Find(id);
+                if (!found.Exitoso || found.Data == null)
+                    return NotFound(new { mensaje = "Conversación no encontrada" });
+
+                var c = found.Data;
+
+                if (string.Equals(c.Status, "closed", StringComparison.OrdinalIgnoreCase))
+                    return StatusCode(StatusCodes.Status409Conflict,
+                        new { exitoso = false, mensaje = "No se permite poner en espera una conversación cerrada.", statusCode = 409 });
+
+                var reason = (req?.Reason ?? "").Trim();
+                if (reason.Length > 500) reason = reason.Substring(0, 500);
+
+                c.IsOnHold = true;
+                c.OnHoldReason = string.IsNullOrWhiteSpace(reason) ? null : reason;
+                c.OnHoldAt = DateTime.UtcNow;
+
+                var uid = GetCurrentUserId();
+                c.OnHoldByUserId = uid;
+
+                var r = _bus.Update(c);
+                if (!r.Exitoso) return r.StatusCodeDescriptivo();
+
+                return Ok(new
+                {
+                    exitoso = true,
+                    data = new
+                    {
+                        id = c.Id,
+                        status = c.Status,
+                        is_on_hold = c.IsOnHold,
+                        on_hold_reason = c.OnHoldReason,
+                        on_hold_at = c.OnHoldAt,
+                        on_hold_by_user_id = c.OnHoldByUserId
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _correo.EnviarCorreoError(ex, new { id, req });
+                return StatusCode(500, ex.Message);
+            }
+        }
+
+        // NUEVO: quitar de espera
+        [HttpPost("{id:int}/resume")]
+        public ActionResult Resume(int id)
+        {
+            try
+            {
+                var found = _bus.Find(id);
+                if (!found.Exitoso || found.Data == null)
+                    return NotFound(new { mensaje = "Conversación no encontrada" });
+
+                var c = found.Data;
+
+                if (string.Equals(c.Status, "closed", StringComparison.OrdinalIgnoreCase))
+                    return StatusCode(StatusCodes.Status409Conflict,
+                        new { exitoso = false, mensaje = "No se permite reanudar una conversación cerrada.", statusCode = 409 });
+
+                c.IsOnHold = false;
+                c.OnHoldReason = null;
+                c.OnHoldAt = null;
+                c.OnHoldByUserId = null;
+
+                var r = _bus.Update(c);
+                if (!r.Exitoso) return r.StatusCodeDescriptivo();
+
+                return Ok(new
+                {
+                    exitoso = true,
+                    data = new
+                    {
+                        id = c.Id,
+                        status = c.Status,
+                        is_on_hold = c.IsOnHold
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _correo.EnviarCorreoError(ex, new { id });
+                return StatusCode(500, ex.Message);
+            }
+        }
 
         [HttpGet("Delete/{id:int}")]
         public ActionResult Delete(int id)
@@ -221,11 +343,10 @@ namespace Whatsapp_API.Controllers.General
             catch (Exception ex)
             {
                 _correo.EnviarCorreoError(ex, new { id });
-                return new DescriptiveBoolean { Exitoso = false, Mensaje = "Error al eliminar", StatusCode = 500 }.StatusCodeDescriptivo();
+                return new DescriptiveBoolean { Exitoso = false, Mensaje = "Error al eliminar", StatusCode = 500 }
+                    .StatusCodeDescriptivo();
             }
         }
-
-        // trae la abierta de un contacto si existe
 
         [HttpGet("by-contact/{contactId:int}/open")]
         [AllowAnonymous]
@@ -237,7 +358,20 @@ namespace Whatsapp_API.Controllers.General
                 if (!r.Exitoso || r.Data == null) return NotFound(new { data = (object?)null });
 
                 var c = r.Data;
-                return Ok(new { data = new { id = c.Id, contact_id = c.ContactId, status = c.Status, started_at = c.StartedAt, last_activity_at = c.LastActivityAt } });
+                return Ok(new
+                {
+                    data = new
+                    {
+                        id = c.Id,
+                        contact_id = c.ContactId,
+                        status = c.Status,
+                        started_at = c.StartedAt,
+                        last_activity_at = c.LastActivityAt,
+                        is_on_hold = c.IsOnHold,
+                        on_hold_reason = c.OnHoldReason,
+                        on_hold_at = c.OnHoldAt
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -246,10 +380,12 @@ namespace Whatsapp_API.Controllers.General
             }
         }
 
-        // saca id de usuario del token 
         private int? GetCurrentUserId()
         {
-            var s = User.FindFirst("id")?.Value ?? User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var s = User.FindFirst("id")?.Value
+                 ?? User.FindFirst("user_id")?.Value
+                 ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
             return int.TryParse(s, out var id) ? id : (int?)null;
         }
     }
