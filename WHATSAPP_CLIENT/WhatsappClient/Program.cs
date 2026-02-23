@@ -2,8 +2,9 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc.Authorization;
 using System.Net.Http.Headers;
-using System.Text;
 using WhatsappClient.Services;
+using WhatsappClient.Middleware;
+using WhatsappClient.Helpers;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,8 +15,6 @@ var companyIdFallback = builder.Configuration["Api:CompanyId"] ?? "1";
 builder.Services.AddControllersWithViews(o =>
 {
     o.Filters.Add(new AuthorizeFilter());
-
-
 });
 
 // Cookie Auth (para la web del cliente)
@@ -80,39 +79,12 @@ app.UseRouting();
 // Session ANTES de Auth
 app.UseSession();
 
-
-app.Use(async (ctx, next) =>
-{
-    string? token = ctx.Session.GetString("JWT_TOKEN");
-    if (!string.IsNullOrWhiteSpace(token))
-    {
-        token = token.Trim();
-        if (token.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-            token = token[7..].Trim();
-        if (token.StartsWith("\"") && token.EndsWith("\""))
-            token = token.Trim('"');
-
-        var exp = JwtHelper.GetJwtExpiry(token);
-        if (exp != null && DateTimeOffset.UtcNow >= exp.Value.AddSeconds(-60))
-        {
-            try { ctx.Session.Remove("JWT_TOKEN"); } catch { }
-            await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-
-            if (!ctx.Request.Path.StartsWithSegments("/Account", StringComparison.OrdinalIgnoreCase))
-            {
-                var returnUrl = Uri.EscapeDataString(ctx.Request.Path + ctx.Request.QueryString);
-                ctx.Response.Redirect("/Account/Login?returnUrl=" + returnUrl);
-                return;
-            }
-        }
-    }
-
-    await next();
-});
+// Middleware de verificación de Auth (JWT en sesión)
+app.UseMiddleware<AuthCheckMiddleware>();
 
 app.UseAuthentication();
 
-// redirecci n ra z
+// redirección raíz
 app.Use(async (context, next) =>
 {
     if (context.Request.Path == "/")
@@ -131,33 +103,3 @@ app.UseAuthorization();
 app.MapControllerRoute(name: "default", pattern: "{controller=Home}/{action=Index}/{id?}");
 
 app.Run();
-
-static class JwtHelper
-{
-    public static DateTimeOffset? GetJwtExpiry(string token)
-    {
-        try
-        {
-            var parts = token.Split('.');
-            if (parts.Length < 2) return null;
-
-            static string B64UrlToB64(string s)
-            {
-                s = s.Replace('-', '+').Replace('_', '/');
-                return s.PadRight(s.Length + (4 - s.Length % 4) % 4, '=');
-            }
-
-            var payloadJson = Encoding.UTF8.GetString(Convert.FromBase64String(B64UrlToB64(parts[1])));
-            using var doc = System.Text.Json.JsonDocument.Parse(payloadJson);
-            if (doc.RootElement.TryGetProperty("exp", out var expEl))
-            {
-                long exp = expEl.ValueKind == System.Text.Json.JsonValueKind.String
-                    ? long.Parse(expEl.GetString()!)
-                    : expEl.GetInt64();
-                return DateTimeOffset.FromUnixTimeSeconds(exp);
-            }
-        }
-        catch { }
-        return null;
-    }
-}
